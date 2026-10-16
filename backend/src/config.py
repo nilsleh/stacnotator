@@ -233,6 +233,18 @@ class Settings(BaseSettings):
         # `DEFAULT_TILER=` (empty) from compose means "no default", not the tiler named "".
         return v or None
 
+    # Directory the hosted tiler serves COGs from its own disk (the compose `tiler` service
+    # mounts $COG_DIR read-only at /data/cogs). When set, a custom map's cog_url may be a
+    # path inside it; unset (the default), every cog_url must be a public http(s) URL.
+    TILER_LOCAL_COG_DIR: str | None = None
+
+    @field_validator("TILER_LOCAL_COG_DIR", mode="after")
+    @classmethod
+    def _blank_local_cog_dir_is_none(cls, v: str | None) -> str | None:
+        if not v:
+            return None
+        return v.rstrip("/") or None
+
     EE_SERVICE_ACCOUNT: str | None = None
     EE_PRIVATE_KEY_PATH: str | None = None
     EE_PRIVATE_KEY: str | None = None  # Direct key content (alternative to path)

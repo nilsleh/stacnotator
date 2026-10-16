@@ -24,6 +24,8 @@ ENV VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID}
 # Install dependencies first (for better caching)
 COPY package.json package-lock.json* ./
 
+ARG NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
+ENV NPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY}
 RUN npm install
 
 # Install Playwright Chromium + OS-level deps (fonts, GTK, NSS, etc.)

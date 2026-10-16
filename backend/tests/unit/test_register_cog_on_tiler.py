@@ -1,5 +1,7 @@
 """Unit test for register_cog_on_tiler - no network, mirrors test_tilers_providers style."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from src import net_guard
@@ -86,3 +88,44 @@ def test_private_cog_forwards_sealed_access_and_requires_tiler_acknowledgement(m
         providers.register_cog_on_tiler(
             TILER, "https://acct.blob.core.windows.net/m.tif", "42", sealed_storage_access=sealed
         )
+
+
+def _local_cog_dir(monkeypatch, value):
+    monkeypatch.setattr(
+        providers, "get_settings", lambda: SimpleNamespace(TILER_LOCAL_COG_DIR=value)
+    )
+
+
+def test_a_local_cog_path_is_forwarded_when_the_tiler_serves_that_dir(monkeypatch):
+    _local_cog_dir(monkeypatch, "/data/cogs")
+    monkeypatch.setattr(providers, "mint_tiler_token", lambda *a, **k: "tok")
+    monkeypatch.setattr(providers, "_register_base", lambda tiler: "https://tiler.test")
+    captured = _fake_post(monkeypatch, {"id": "s"})
+
+    providers.register_cog_on_tiler(TILER, "/data/cogs/sn7/2018_01.tif", "42")
+
+    assert captured["json"]["cog_url"] == "/data/cogs/sn7/2018_01.tif"
+
+
+@pytest.mark.parametrize(
+    ("local_dir", "cog_url"),
+    [
+        (None, "/data/cogs/a.tif"),
+        ("/data/cogs", "/data/cogs/../../etc/passwd"),
+        ("/data/cogs", "/data/cogsevil/a.tif"),
+        ("/data/cogs", "/etc/passwd"),
+        ("/data/cogs", "data/cogs/a.tif"),
+        ("/data/cogs", "file:///data/cogs/a.tif"),
+    ],
+)
+def test_other_local_paths_are_never_forwarded(monkeypatch, local_dir, cog_url):
+    _local_cog_dir(monkeypatch, local_dir)
+    monkeypatch.setattr(providers, "mint_tiler_token", lambda *a, **k: "tok")
+
+    def _no_post(*args, **kwargs):
+        raise AssertionError("must not reach the tiler")
+
+    monkeypatch.setattr(providers.httpx, "post", _no_post)
+
+    with pytest.raises(net_guard.UnsafeUrlError):
+        providers.register_cog_on_tiler(TILER, cog_url, "42")

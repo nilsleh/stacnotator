@@ -11,12 +11,13 @@ Two providers:
 """
 
 from dataclasses import dataclass
-from urllib.parse import quote, urlencode
+from posixpath import normpath
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 
 from src.config import TilerCfg, get_settings
-from src.net_guard import assert_public_url
+from src.net_guard import UnsafeUrlError, assert_public_url
 from src.tilers.registry import HOSTED as PROVIDER_HOSTED
 from src.tilers.registry import MPC as PROVIDER_MPC
 from src.tilers.registry import is_mpc_url
@@ -236,6 +237,18 @@ def ingest_on_tiler(
     return Ingested(collection=result.get("collection", collection), count=result["ingested"])
 
 
+def assert_cog_url_allowed(cog_url: str) -> None:
+    """A cog_url is either a public http(s) URL or, when ``TILER_LOCAL_COG_DIR`` is set,
+    a normalized path inside that directory on the tiler's own read-only disk."""
+    local_dir = get_settings().TILER_LOCAL_COG_DIR
+    parsed = urlparse(cog_url)
+    if local_dir and not parsed.scheme and not parsed.netloc:
+        if normpath(cog_url) == cog_url and cog_url.startswith(f"{local_dir}/"):
+            return
+        raise UnsafeUrlError(f"Local COG paths must be inside {local_dir}/")
+    assert_public_url(cog_url)
+
+
 def register_cog_on_tiler(
     tiler: TilerCfg,
     cog_url: str,
@@ -252,7 +265,7 @@ def register_cog_on_tiler(
     ``internal_storage`` marks the search so the tiler reads its assets with the managed
     identity. Returns the tiler search id, used to build the tile-URL template.
     """
-    assert_public_url(cog_url)
+    assert_cog_url_allowed(cog_url)
     body = {
         "cog_url": cog_url,
         "campaign_id": tile_scope,
