@@ -9,7 +9,7 @@ import { collectionsInView } from '../../campaign/imagery';
 import { awaitingImageryRegistration } from '../../campaign/tileUrls';
 import { computeTaskProgress } from '../../campaign/tasks';
 import { handleProbeClick, useDrawingInteractions, useEditDrawnId } from '../../drawing';
-import { geometryTopRight, missingRequiredFields } from '../../campaign/annotation';
+import { geometryTopRight, missingRequiredFields, wktToGeometry } from '../../campaign/annotation';
 import { useCameraZoom } from '~/shared/map/Camera';
 import { applyCameraTarget, fitAnnotations, focusCameraTarget, mainCamera } from '../../map/camera';
 import { annotationsVisibleAt, composeLayers, type ComposeState } from '../../map/compose';
@@ -37,9 +37,11 @@ import { VectorLayerControls } from './controls/VectorLayerControls';
 import { ViewControls } from './controls/ViewControls';
 import { TimelineSidebar } from './TimelineSidebar';
 import { SelectionControls } from './SelectionControls';
+import { SceneScorePrompt } from './SceneScorePrompt';
 import { usePreloading } from './usePreloading';
 import { useSceneNotice } from './SceneNotice';
 import { useSceneAutoLoad, useSceneSliceLayers } from '../../stores/scenes';
+import { useSceneStore, useSceneTaskId } from '../../stores/sceneDrawing';
 
 /** Stable empty array: a fresh [] each render would recompose the layers. */
 const EMPTY_PROBES: LonLat[] = [];
@@ -327,7 +329,8 @@ export function MainMapBody() {
   // Draw/edit/box-select belong to the map they act on, so this is where the
   // drawing feature's wiring is mounted.
   const { interactions, onMapClick: drawingClick } = useDrawingInteractions();
-  const onMapClick = mode === 'tasks' ? taskProbeClick : drawingClick;
+  const sceneTaskId = useSceneTaskId();
+  const onMapClick = mode === 'tasks' && sceneTaskId === null ? taskProbeClick : drawingClick;
   const probePoints = useWorkStore((s) => (s.probeMarkerHidden ? EMPTY_PROBES : s.probePoints));
   const activeProbe = useWorkStore((s) => s.activeProbe);
   const focus = useMapFocus();
@@ -363,10 +366,44 @@ export function MainMapBody() {
 
   const annotations = useSavedAnnotations(hiddenIds, highlightIds);
 
-  const draftFeatures = useMemo(
-    () => (unsaved ? [{ id: 'draft', geometry: draft.geometry }] : []),
-    [unsaved, draft]
+  // A scene's shapes are reloaded on every write this page makes, which is
+  // what keeps the scene list and the map in step with the server.
+  const annotationRevision = useWorkStore((s) => s.annotationRevision);
+  const sceneLoadedFor = useSceneStore((s) => s.taskId);
+  const sceneRows = useSceneStore((s) => s.annotations);
+  useEffect(() => {
+    if (sceneTaskId === null) useSceneStore.getState().clear();
+    else void useSceneStore.getState().load(campaign.id, sceneTaskId);
+  }, [campaign.id, sceneTaskId, annotationRevision]);
+  // A shape waiting for its score belongs to the scene it was drawn in.
+  const scenePending = useSceneStore((s) => s.pending);
+  const outbox = useSceneStore((s) => s.outbox);
+  useEffect(() => {
+    const pending = useSceneStore.getState().pending;
+    if (pending && pending.taskId !== sceneTaskId) useSceneStore.getState().setPending(null);
+  }, [sceneTaskId]);
+  const sceneAnnotations = useMemo(
+    () =>
+      sceneTaskId === null || sceneLoadedFor !== sceneTaskId
+        ? undefined
+        : sceneRows.map((a) => ({
+            id: a.id,
+            geometry: wktToGeometry(a.geometry.geometry),
+            properties: { label_id: a.label_id },
+          })),
+    [sceneTaskId, sceneLoadedFor, sceneRows]
   );
+
+  // Scored shapes still on their way to the server are drawn as sketches
+  // until the scene list carries them.
+  const draftFeatures = useMemo(() => {
+    if (unsaved) return [{ id: 'draft', geometry: draft.geometry }];
+    const features = outbox
+      .filter((o) => o.taskId === sceneTaskId)
+      .map((o) => ({ id: o.key, geometry: o.geometry }));
+    if (scenePending) features.push({ id: 'draft', geometry: scenePending.geometry });
+    return features;
+  }, [unsaved, draft, scenePending, outbox, sceneTaskId]);
 
   const layers = useMemo(() => {
     const state: ComposeState = {
@@ -378,10 +415,15 @@ export function MainMapBody() {
       crosshairPoint: focus?.center ?? null,
       crosshairColor: focus?.crosshairColor ?? null,
       draftFeatures,
-      draftLabelId: draft.phase === 'idle' ? null : draft.labelId,
+      draftLabelId: scenePending
+        ? scenePending.labelId
+        : draft.phase !== 'idle'
+          ? draft.labelId
+          : (outbox.find((o) => o.taskId === sceneTaskId)?.labelId ?? null),
       probePoints,
       activeProbe,
       originTask,
+      sceneAnnotations,
     };
     return composeLayers({ catalog, mode }, state);
   }, [
@@ -396,6 +438,10 @@ export function MainMapBody() {
     probePoints,
     activeProbe,
     originTask,
+    sceneAnnotations,
+    scenePending,
+    outbox,
+    sceneTaskId,
   ]);
 
   // A fresh tuple each render would restart preloading forever (its enqueue
@@ -440,8 +486,13 @@ export function MainMapBody() {
   // Confirm/delete ride on the geometry they act on rather than in a corner of
   // the page, which is what makes them findable on a big map. A draft outranks
   // a selection: it is the thing the user just did.
-  const anchor: MapAnchor | null =
-    mode !== 'explore'
+  const anchor: MapAnchor | null = scenePending
+    ? {
+        at: geometryTopRight(scenePending.geometry),
+        content: <SceneScorePrompt />,
+        offset: [10, -5],
+      }
+    : mode !== 'explore'
       ? null
       : draft.phase === 'draft' && missing.length > 0
         ? {

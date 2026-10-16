@@ -7,6 +7,7 @@ import type { LabelBase } from '~/api/client';
 import { useLayoutStore as useGlobalLayoutStore } from '~/shared/stores/layout.store';
 import { handleError } from '~/shared/utils/errorHandler';
 import { DIGIT_INPUT_TIMEOUT_MS } from '~/shared/utils/constants';
+import { squareBuilding } from '~/shared/utils/utility';
 import { focusFormFieldInput, reveal, revealAndFocus } from './components/FormFields';
 import { commitEdit, deleteSelection } from './drawing';
 import type { Binding } from './hotkeys';
@@ -29,10 +30,13 @@ import {
 } from './stores/campaign';
 import { isAudienceMember } from '~/features/campaigns/utils/labellingPolicy';
 import { useImageryStore } from './stores/imagery';
+import { buildingScenesOf } from './stores/sceneDrawing';
 import { currentTask, useTasksStore } from './stores/tasks';
 import { useWorkStore, type Tool } from './stores/work';
 import {
   advance,
+  finishScene,
+  goPrevious,
   skipCurrent,
   submitAnnotation,
   submitAuthoritative,
@@ -398,7 +402,7 @@ function adjustConfidence(delta: number): void {
 }
 
 function taskBindings(): Binding[] {
-  const { campaign, catalog } = campaignState();
+  const { campaign } = campaignState();
   const labels = campaign.settings.labels;
 
   // Below 10 labels a single keystroke always resolves the selection, so only
@@ -432,7 +436,7 @@ function taskBindings(): Binding[] {
       })
     ),
 
-    { key: 'w', help: 'Previous task', run: () => useTasksStore.getState().previous(catalog) },
+    { key: 'w', help: 'Previous task', run: () => goPrevious() },
     { key: 's', help: 'Next task', run: () => void advance() },
     { key: 'q', help: 'Decrease confidence', run: () => adjustConfidence(-1) },
     { key: 'e', help: 'Increase confidence', run: () => adjustConfidence(1) },
@@ -458,6 +462,60 @@ function taskBindings(): Binding[] {
         );
       },
     },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Scenes (building campaigns): Tasks mode, drawing buildings
+// ---------------------------------------------------------------------------
+
+function sceneBindings(): Binding[] {
+  const config = buildingScenesOf(campaignState().campaign);
+  const tool = (key: string, next: Tool, help: string): Binding => ({
+    key,
+    help,
+    run: () => {
+      const work = useWorkStore.getState();
+      if (next === 'annotate' && config) work.setSelectedLabelId(config.building_label_id);
+      void work.selectTool(next);
+    },
+  });
+  const noEditPending = () => useWorkStore.getState().edit?.pending == null;
+  const squareEdit = () => {
+    const edit = useWorkStore.getState().edit;
+    if (!edit) return;
+    const squared = squareBuilding(edit.pending ?? edit.geometry);
+    // The edit interaction starts from `geometry`, so it redraws squared; the
+    // pending copy is what Enter saves.
+    useWorkStore.setState({ edit: { ...edit, geometry: squared } });
+    useWorkStore.getState().setPendingGeometry(squared);
+  };
+
+  return [
+    tool('r', 'annotate', 'Draw buildings'),
+    tool('e', 'edit', 'Edit buildings'),
+    tool('p', 'pan', 'Pan tool'),
+    { key: 'w', help: 'Previous scene', run: () => goPrevious() },
+    { key: 's', help: 'Next scene', run: () => void advance() },
+    {
+      key: 'c',
+      help: 'Focus comment',
+      run: () => revealAndFocus(document.querySelector('[data-task-comment]'), commentBox()),
+    },
+    {
+      key: 'enter',
+      help: 'Complete the scene',
+      when: noEditPending,
+      run: () => void finishScene('complete'),
+    },
+    {
+      key: 'q',
+      help: 'Square the corners of the building being edited',
+      when: () => useWorkStore.getState().edit !== null,
+      run: squareEdit,
+    },
+    { key: 'x', help: 'Mark the scene empty', run: () => void finishScene('empty') },
+    { key: 'k', help: 'Skip the scene', run: () => void skipCurrent() },
   ];
 }
 
@@ -676,11 +734,14 @@ export function canEnterMode(mode: WorkMode): boolean {
 }
 
 export function pageKeymap(): Binding[] {
-  const { workMode, isMobile } = campaignState();
-  // Drawing is Explore's map behaviour, and the one surface that edits data by
-  // pointer - mobile gets the read-only canvas instead.
-  const editing = workMode === 'explore' && !isMobile ? editBindings() : [];
-  const mode = workMode === 'tasks' ? taskBindings() : exploreBindings();
+  const { campaign, workMode, isMobile } = campaignState();
+  const scenes = workMode === 'tasks' && buildingScenesOf(campaign) !== null;
+  // Drawing is Explore's map behaviour - and a scene's, whose buildings are
+  // drawn in Tasks mode - and the one surface that edits data by pointer:
+  // mobile gets the read-only canvas instead.
+  const editing = (workMode === 'explore' || scenes) && !isMobile ? editBindings() : [];
+  const mode =
+    workMode === 'tasks' ? (scenes ? sceneBindings() : taskBindings()) : exploreBindings();
   return [
     ...tag(editing, 'edit'),
     ...tag(formFieldBindings(), 'form'),

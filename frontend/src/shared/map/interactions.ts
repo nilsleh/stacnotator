@@ -13,7 +13,7 @@ import Modify from 'ol/interaction/Modify';
 import Translate from 'ol/interaction/Translate';
 import DragBox from 'ol/interaction/DragBox';
 import Snap from 'ol/interaction/Snap';
-import { altKeyOnly, always, shiftKeyOnly } from 'ol/events/condition';
+import { altKeyOnly, always, noModifierKeys, shiftKeyOnly } from 'ol/events/condition';
 import { toLonLat } from 'ol/proj';
 import GeoJSONFormat from 'ol/format/GeoJSON';
 import { LAYER_ID_PROP, featurePropsOf, layerFeatureId, toOlStyle } from './layers';
@@ -141,6 +141,7 @@ export function configsEqual(
 
 interface Callbacks {
   onDrawEnd?: (g: GeoJSON.Geometry) => void;
+  canStart?: () => boolean;
   onGeometryChange?: (g: GeoJSON.Geometry) => void;
   onBox?: (bbox: Bbox, hits: BoxHit[]) => void;
 }
@@ -148,6 +149,7 @@ interface Callbacks {
 function callbacksOf(spec: InteractionSpec | undefined): Callbacks {
   return {
     onDrawEnd: spec?.draw?.onDrawEnd,
+    canStart: spec?.draw?.canStart,
     onGeometryChange: spec?.edit?.onGeometryChange,
     onBox: spec?.boxSelect?.onBox,
   };
@@ -230,6 +232,10 @@ function setup(map: OLMap, spec: InteractionSpec, sketchLayer: SketchLayer): Att
     const draw = new Draw({
       type: shape,
       style: toOlStyle(sketchStyle ?? DEFAULT_SKETCH_STYLE),
+      // OL's default condition plus the caller's gate. A sketch already under
+      // way is always allowed to finish.
+      condition: (e) =>
+        noModifierKeys(e) && (attached.drawing || (attached.callbacks.canStart?.() ?? true)),
     });
     let sketch: Feature<Geometry> | null = null;
     draw.on('drawstart', (evt) => {

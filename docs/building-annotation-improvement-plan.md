@@ -244,11 +244,11 @@ How it maps onto `develop` (`backend/src/buildings/`, migration `bb1buildings`):
 
 ### P4 - Building lifecycle (frontend)
 
-- [ ] Build the scene mode from the P0.5 spike: task mode shows the scene outline and draws building polygons.
-- [ ] Add Complete / Mark Empty / Skip / Draft actions to `develop`'s task panel.
-- [ ] Keep the spike's scoring flow: score prompt on finish (1-5 / Esc), background save
+- [x] Build the scene mode from the P0.5 spike: task mode shows the scene outline and draws building polygons.
+- [x] Add Complete / Mark Empty / Skip / Draft actions to `develop`'s task panel.
+- [x] Keep the spike's scoring flow: score prompt on finish (1-5 / Esc), background save
   with retry, no double-click zoom, draw tool armed across scenes.
-- [ ] Hand-in: a progress view (complete / empty / skipped / draft) and a **Hand in** button
+- [x] Hand-in: a progress view (complete / empty / skipped / draft) and a **Hand in** button
   that is enabled once nothing blocks it. Next must not silently wrap from the last scene
   to the first; at the end it shows the summary and the hand-in.
   Keep the spike's navigation (`spike/scene-drawing` `3a17312f`, `stores/sceneNav.ts`):
@@ -256,15 +256,35 @@ How it maps onto `develop` (`backend/src/buildings/`, migration `bb1buildings`):
   never the current one; All walks in order and stops at both ends with an end card and
   "Go to the first remaining scene". The Prev/Next buttons and the W/S keys share it.
   The canvas layout stays as in `develop`: annotators resize panels with **Edit Layout**.
-- [ ] Hide "Submit authoritative" in building campaigns.
-- [ ] Drawing shows and edits only the active scene's buildings; failed saves and edits stay
+- [x] Hide "Submit authoritative" in building campaigns.
+- [x] Drawing shows and edits only the active scene's buildings; failed saves and edits stay
   retryable; references stay hidden while drawing.
-- [ ] Building campaigns queue `pending` + `in_progress` scenes by default; other campaigns
+- [x] Building campaigns queue `pending` + `in_progress` scenes by default; other campaigns
   keep `develop`'s default. Navigation can reach empty and in-progress scenes.
-- [ ] Port the building-squaring helper into `develop`'s `utility.ts` and merge the tests.
+- [x] Port the building-squaring helper into `develop`'s `utility.ts` and merge the tests.
 
 **Acceptance:** in the browser, draw two buildings, reload, edit, delete one, complete the
 scene, mark another scene empty, and export. Counts, geometry and statuses persist.
+**Done:** a headless browser run on a freshly seeded campaign (16 checks: draw two buildings
+with one squared, reload, re-score, delete, Complete, Mark empty, panel and server counts,
+export) and a hand-in run (Hand in, then Draft withdraws it) pass; frontend type-check,
+lint and the annotation/shared vitest suites (1044 tests) pass.
+
+Notes:
+
+- A campaign is a building campaign when `settings.building_scenes` is set; every task is
+  then a scene (`stores/sceneDrawing.ts`). Buildings load from
+  `GET .../buildings/scenes/{task}/buildings` (the caller's own).
+- The task panel swaps label/confidence/Submit for `SceneActions`: Complete, Mark empty,
+  Skip, Draft. Keys on a scene: `r`/`e`/`p` draw/edit/pan, `Enter` Complete, `x` Empty,
+  `k` Skip, `w`/`s` Prev/Next, `q` squares the building being scored or edited.
+- Navigation reads outcomes off the tasks (a draft counts as to draw); the panel counts
+  and hand-in come from `/buildings/progress` (`stores/buildingProgress.ts`), which is
+  reloaded after every write and drops a locally cached outcome the server has reopened.
+- Building campaigns load with every status in the task filter and open on the first
+  remaining scene, so a finished set still shows its progress and Hand in.
+- Explore in a building campaign never sends `origin_task_id`; annotation tiles (and so
+  references) are drawn in Explore only, never over a scene.
 
 ### P5 - Local tooling and docs
 

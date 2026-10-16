@@ -5,7 +5,9 @@ import {
   formatSliceLabel,
   formatWindowLabel,
   parseEmailList,
+  orthogonalizePolygonRing,
   searchUsers,
+  squareBuilding,
 } from './utility';
 
 describe('formatDuration', () => {
@@ -150,5 +152,80 @@ describe('parseEmailList', () => {
 
   it('ignores empty input', () => {
     expect(parseEmailList('  \n ')).toEqual({ emails: [], invalid: [] });
+  });
+});
+
+/** |cos| of every corner angle, in local metres-ish coordinates. */
+const cornerCosines = (closedRing: [number, number][]) => {
+  const ring = closedRing.slice(0, -1);
+  const cosLat = Math.cos(((ring.reduce((sum, p) => sum + p[1], 0) / ring.length) * Math.PI) / 180);
+  return ring.map((p, i) => {
+    const prev = ring[(i + ring.length - 1) % ring.length];
+    const next = ring[(i + 1) % ring.length];
+    const a = [(prev[0] - p[0]) * cosLat, prev[1] - p[1]];
+    const b = [(next[0] - p[0]) * cosLat, next[1] - p[1]];
+    return Math.abs(
+      (a[0] * b[0] + a[1] * b[1]) / (Math.hypot(a[0], a[1]) * Math.hypot(b[0], b[1]))
+    );
+  });
+};
+
+describe('orthogonalizePolygonRing', () => {
+  it('squares a skewed quadrilateral and keeps the ring closed', () => {
+    const ring = orthogonalizePolygonRing([
+      [10, 50],
+      [10.0011, 50.00002],
+      [10.00108, 50.0007],
+      [9.99998, 50.00068],
+      [10, 50],
+    ]);
+    expect(ring).toHaveLength(5);
+    expect(ring[0]).toEqual(ring[4]);
+    for (const cosine of cornerCosines(ring)) expect(cosine).toBeLessThan(1e-6);
+  });
+
+  it('makes every corner perpendicular or collinear on a multi-vertex footprint', () => {
+    const ring = orthogonalizePolygonRing([
+      [0, 0],
+      [0.0003, 0.00005],
+      [0.0007, -0.00004],
+      [0.001, 0],
+      [0.001, 0.001],
+      [0, 0.001],
+      [0, 0],
+    ]);
+    for (const cosine of cornerCosines(ring)) {
+      expect(Math.min(cosine, 1 - cosine)).toBeLessThan(1e-6);
+    }
+  });
+
+  it('leaves degenerate rings alone', () => {
+    const line: [number, number][] = [
+      [0, 0],
+      [1, 1],
+    ];
+    expect(orthogonalizePolygonRing(line)).toBe(line);
+  });
+});
+
+describe('squareBuilding', () => {
+  it('squares polygons and passes other geometry through', () => {
+    const point: GeoJSON.Geometry = { type: 'Point', coordinates: [1, 2] };
+    expect(squareBuilding(point)).toBe(point);
+    const squared = squareBuilding({
+      type: 'Polygon',
+      coordinates: [
+        [
+          [10, 50],
+          [10.0011, 50.00002],
+          [10.00108, 50.0007],
+          [9.99998, 50.00068],
+          [10, 50],
+        ],
+      ],
+    });
+    expect(squared.type).toBe('Polygon');
+    const ring = (squared as GeoJSON.Polygon).coordinates[0] as [number, number][];
+    for (const cosine of cornerCosines(ring)) expect(cosine).toBeLessThan(1e-6);
   });
 });

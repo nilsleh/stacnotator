@@ -2,11 +2,12 @@ import { getAllAnnotationTasks, getCampaignWithImageryWindows, listTaskSets } fr
 import { buildImageryCatalog } from './campaign/imagery';
 import { restoreSnapshot } from './campaign/imageryNav';
 import { layoutForView } from './canvas/grid';
-import { seedFilter } from './campaign/tasks';
+import { ALL_TASK_STATUSES, seedFilter } from './campaign/tasks';
 import { startCollectionFor, useCampaignStore, type WorkMode } from './stores/campaign';
 import { useImageryStore } from './stores/imagery';
 import { useLayoutStore } from './stores/layout';
 import { resetScenes } from './stores/scenes';
+import { firstRemainingScene, useSceneNavStore } from './stores/sceneNav';
 import { useTasksStore } from './stores/tasks';
 import { useWorkStore } from './stores/work';
 
@@ -46,10 +47,15 @@ export async function loadCampaign(
   const catalog = buildImageryCatalog(campaign);
   const view = campaign.imagery_views[0] ?? null;
 
-  const filter = seedFilter(tasks, taskSets, options.currentUserId, options.now, {
+  const seeded = seedFilter(tasks, taskSets, options.currentUserId, options.now, {
     taskSetId: options.taskSetId,
     isPublic: campaign.is_public,
   });
+  // A building campaign keeps every scene in the list, finished ones too, so
+  // progress and the hand-in stay in reach; it opens on the first scene still
+  // to draw (below).
+  const buildingScenes = campaign.settings.building_scenes != null;
+  const filter = buildingScenes ? { ...seeded, statuses: [...ALL_TASK_STATUSES] } : seeded;
 
   // A campaign with no tasks has nothing to claim, so it opens in Explore
   // unless a deep link asked for a mode.
@@ -88,6 +94,10 @@ export async function loadCampaign(
     now: options.now,
     preferTaskId: options.preferTaskId,
   });
+  useSceneNavStore.setState({ cycle: 'remaining', endAt: null });
+  if (buildingScenes && workMode === 'tasks' && options.preferTaskId === undefined) {
+    firstRemainingScene();
+  }
 
   return {
     annotationId: workMode === 'explore' ? (options.annotationId ?? null) : null,

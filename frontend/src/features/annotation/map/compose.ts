@@ -18,6 +18,8 @@ export const TILE_SKELETON_LAYER_ID = 'tile-skeleton';
 export const ANNOTATION_LAYER_ID = 'annotations';
 export const ANNOTATION_DELTA_LAYER_ID = 'annotations-delta';
 export const ANNOTATION_MARKER_LAYER_ID = 'annotations-new';
+/** The shapes drawn in the open scene, in Tasks mode. */
+export const SCENE_LAYER_ID = 'scene-annotations';
 
 /** Saved annotations come from the tiles, from the overlay of what the tiles do
  *  not carry yet, and - for the ones another annotator just made - from the
@@ -25,7 +27,8 @@ export const ANNOTATION_MARKER_LAYER_ID = 'annotations-new';
 export const isAnnotationLayer = (layerId: LayerId | undefined): boolean =>
   layerId === ANNOTATION_LAYER_ID ||
   layerId === ANNOTATION_DELTA_LAYER_ID ||
-  layerId === ANNOTATION_MARKER_LAYER_ID;
+  layerId === ANNOTATION_MARKER_LAYER_ID ||
+  layerId === SCENE_LAYER_ID;
 export const EXTENT_LAYER_ID = 'task-extent';
 export const CROSSHAIR_LAYER_ID = 'crosshair';
 export const ORIGIN_TASK_LAYER_ID = 'origin-task';
@@ -137,6 +140,8 @@ export interface ComposeState extends ImageryNavState {
   activeProbe?: number | null;
   /** Explore marks the task the annotator came from. */
   originTask?: OriginTask | null;
+  /** Tasks mode on a scene: the shapes drawn in it, `label_id` in properties. */
+  sceneAnnotations?: GeoFeature[];
 }
 
 /** `v` is the version the tiles were fetched at: changing it is what fetches
@@ -391,6 +396,24 @@ export function composeLayers(ctx: ComposeContext, state: ComposeState): LayerSp
         style: markerStyle(annotations),
         minZoom: ANNOTATION_TILE_MIN_ZOOM - 1,
         zIndex: ANNOTATION_MARKER_Z,
+      });
+    }
+  }
+
+  // A scene's own shapes are its subject, so a scene task draws them - and
+  // only them - over its outline.
+  if (mode === 'tasks' && !isWindow && state.sceneAnnotations && state.annotations) {
+    const annotations = state.annotations;
+    const features = state.sceneAnnotations.filter(
+      (feature) => !annotations.hiddenIds?.has(Number(feature.id))
+    );
+    if (features.length > 0) {
+      layers.push({
+        kind: 'features',
+        id: SCENE_LAYER_ID,
+        features,
+        style: deltaStyle(annotations),
+        zIndex: ANNOTATION_DELTA_Z,
       });
     }
   }

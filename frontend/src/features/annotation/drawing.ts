@@ -25,13 +25,20 @@ import {
   campaignState,
   formFields,
   mayModifyAnnotation,
-  originTaskId,
   useCampaignStore,
   useCanModifyAnnotation,
   useLabels,
 } from './stores/campaign';
 import { useImageryStore } from './stores/imagery';
 import { usePrefsStore } from './stores/prefs';
+import {
+  annotationOriginTaskId,
+  buildingScenesOf,
+  sceneTaskId,
+  useSceneStore,
+  useSceneTaskId,
+  type OutboxShape,
+} from './stores/sceneDrawing';
 import { useWorkStore } from './stores/work';
 
 const DRAW_SHAPES: Record<GeometryType, DrawShape> = {
@@ -65,7 +72,7 @@ export function annotationBody(
     confidence: null,
     // An empty answer set is "no answers given", not "all answers cleared".
     form_values: Object.keys(formValues).length ? formValues : null,
-    origin_task_id: originTaskId(),
+    origin_task_id: annotationOriginTaskId(),
   };
 }
 
@@ -220,6 +227,15 @@ async function selectInBox(bbox: Bbox): Promise<void> {
 // Gestures
 // ---------------------------------------------------------------------------
 
+/** A scored building reached the server: bumps the annotation revision, which
+ *  is what reloads the scene's buildings and its progress. */
+export const onSceneShapeSaved = (shape: OutboxShape & { savedId: number }) =>
+  useWorkStore
+    .getState()
+    .recordWrites([
+      { id: shape.savedId, labelId: shape.labelId, geometry: shape.geometry, origin: 'local' },
+    ]);
+
 /** A finished sketch. One draft at a time, so an open one is resolved first;
  *  when that save fails the draft is parked for a retry and this shape is not
  *  started, rather than silently replacing what could not be saved. */
@@ -227,6 +243,15 @@ async function handleDrawEnd(geometry: GeoJSON.Geometry): Promise<void> {
   const work = useWorkStore.getState();
   const labelId = work.selectedLabelId;
   if (labelId === null) return;
+
+  // A building is only stored once it is scored: hold it for the prompt.
+  const sceneId = sceneTaskId();
+  if (sceneId !== null) {
+    const buildingLabelId =
+      buildingScenesOf(useCampaignStore.getState().campaign)?.building_label_id ?? labelId;
+    useSceneStore.getState().setPending({ taskId: sceneId, labelId: buildingLabelId, geometry });
+    return;
+  }
 
   if (work.draft.phase === 'draft' && (await work.closeDraft()) === 'save-failed') {
     alert('The previous annotation could not be saved - retry or discard it first.', 'error');
@@ -340,6 +365,8 @@ export function useDrawingInteractions(): {
   onMapClick: ((e: MapClickEvent) => void) | undefined;
 } {
   const isExplore = useCampaignStore((s) => s.workMode === 'explore');
+  const isScene = useSceneTaskId() !== null;
+  const drawable = isExplore || isScene;
   const tool = useWorkStore((s) => s.tool);
   const selectedLabelId = useWorkStore((s) => s.selectedLabelId);
   const edit = useWorkStore((s) => s.edit);
@@ -381,8 +408,9 @@ export function useDrawingInteractions(): {
   const onMapClick = useCallback((event: MapClickEvent) => void handleMapClick(event), []);
 
   const spec = useMemo<InteractionSpec | undefined>(() => {
-    // Tasks mode has no drawing tools: its map is the task's.
-    if (!isExplore) return undefined;
+    // Tasks mode has no drawing tools - its map is the task's - except on a
+    // scene, whose task is to draw the shapes inside it.
+    if (!drawable) return undefined;
 
     if (tool === 'annotate') {
       if (!label || !sketchStyle) return undefined;
@@ -391,6 +419,8 @@ export function useDrawingInteractions(): {
           shape: DRAW_SHAPES[label.geometry_type],
           sketchStyle,
           onDrawEnd: (geometry) => void handleDrawEnd(geometry),
+          // One building at a time: the next starts once this one is scored.
+          canStart: () => useSceneStore.getState().pending === null,
         },
         snap: true,
       };
@@ -421,7 +451,7 @@ export function useDrawingInteractions(): {
     // pending drag would tear the interaction down mid-gesture.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    isExplore,
+    drawable,
     tool,
     label,
     sketchStyle,
@@ -432,5 +462,5 @@ export function useDrawingInteractions(): {
     vector,
   ]);
 
-  return { interactions: spec, onMapClick: isExplore ? onMapClick : undefined };
+  return { interactions: spec, onMapClick: drawable ? onMapClick : undefined };
 }

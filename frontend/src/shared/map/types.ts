@@ -110,7 +110,16 @@ export interface BoxHit {
 }
 
 export interface InteractionSpec {
-  draw?: { shape: DrawShape; onDrawEnd: (g: GeoJSON.Geometry) => void; sketchStyle?: StyleSpec };
+  draw?: {
+    shape: DrawShape;
+    onDrawEnd: (g: GeoJSON.Geometry) => void;
+    sketchStyle?: StyleSpec;
+    /** Read on each click: while false no new sketch starts, but the
+     *  interaction stays on the map, so a finishing double-click is still
+     *  swallowed rather than zooming. Not config - changing it never
+     *  re-attaches. */
+    canStart?: () => boolean;
+  };
   edit?: {
     feature: GeoFeature;
     /** Fires on modify/translate end. */

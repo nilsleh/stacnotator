@@ -21,6 +21,9 @@ import { listNotes, type SliceComment } from './campaign/sliceComments';
 import { usesClaimPool } from './campaign/tasks';
 import { campaignState, formFields, useCampaignStore } from './stores/campaign';
 import { currentTask, useTasksStore } from './stores/tasks';
+import { onSceneTask, stepScene } from './stores/sceneNav';
+import { buildingScenesOf, unsavedBuildings } from './stores/sceneDrawing';
+import { noteOutcomeWritten, useBuildingProgressStore } from './stores/buildingProgress';
 import { usePrefsStore } from './stores/prefs';
 import { forgetTaskActiveMs, readTaskActiveMs } from './taskTiming';
 import { useWorkStore } from './stores/work';
@@ -261,6 +264,7 @@ async function run(options: {
   if (outcome.kind === 'blocked') alert(`Missing required: ${outcome.missing.join(', ')}`, 'error');
   else if (outcome.kind === 'error') alert(outcome.message, 'error');
   else if (outcome.kind === 'submitted') {
+    noteOutcomeWritten(outcome.task.id);
     tasks.replaceTask(outcome.task, catalog);
     await advance();
   } else if (outcome.kind === 'removed') {
@@ -279,6 +283,10 @@ async function run(options: {
  * a fixed list of tasks, where stepping locally is both correct and instant.
  */
 export async function advance(): Promise<void> {
+  if (onSceneTask()) {
+    stepScene(1);
+    return;
+  }
   const { catalog } = campaignState();
   const tasks = useTasksStore.getState();
   if (!usesClaimPool(tasks.filter)) {
@@ -300,6 +308,15 @@ export async function advance(): Promise<void> {
   } catch (error) {
     handleError(error, 'Could not get the next task');
   }
+}
+
+/** Step back a task; scenes step back within the scene cycle and never wrap. */
+export function goPrevious(): void {
+  if (onSceneTask()) {
+    stepScene(-1);
+    return;
+  }
+  useTasksStore.getState().previous(campaignState().catalog);
 }
 
 const MISMATCH_CONFIRM = {
@@ -382,5 +399,53 @@ export async function skipCurrent(): Promise<void> {
   }
   await guarded(async () => {
     await run({ labelId: null, isSkip: true });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Scenes (building campaigns)
+// ---------------------------------------------------------------------------
+
+export type SceneOutcome = 'complete' | 'empty';
+
+/**
+ * Finish the current scene: Complete once its buildings are drawn, Empty when
+ * it has none. The server holds both rules (Complete needs a scored building,
+ * Empty none); the client only refuses while a building is still being scored
+ * or saved, which the server cannot see. Moves on like any submit.
+ */
+export async function finishScene(outcome: SceneOutcome): Promise<void> {
+  const task = currentTask();
+  const config = buildingScenesOf(useCampaignStore.getState().campaign);
+  if (!task || !config) return;
+  if (unsavedBuildings(task.id) > 0) {
+    alert('Score and save every building before finishing the scene.', 'error');
+    return;
+  }
+  const labelId = outcome === 'complete' ? config.complete_label_id : config.empty_label_id;
+  await guarded(async () => {
+    // A scene outcome is not a classification, so there is nothing to validate.
+    await run({ labelId, confirmMismatch: true });
+  });
+}
+
+/** Take the outcome off the current scene, leaving its buildings as a draft. */
+export async function markCurrentSceneDraft(): Promise<void> {
+  const task = currentTask();
+  const { campaign, currentUserId } = useCampaignStore.getState();
+  if (!task || !campaign || !currentUserId) return;
+  await guarded(async () => {
+    const ok = await useBuildingProgressStore.getState().markDraft(campaign.id, task.id);
+    if (!ok) return;
+    noteOutcomeWritten(task.id);
+    useTasksStore.getState().replaceTask(
+      {
+        ...task,
+        annotations: task.annotations.filter((a) => a.created_by_user_id !== currentUserId),
+        assignments: withAssignmentStatus(task, currentUserId, 'pending'),
+        task_status: 'pending',
+      },
+      campaignState().catalog
+    );
   });
 }

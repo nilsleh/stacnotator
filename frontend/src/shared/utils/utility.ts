@@ -341,3 +341,161 @@ export const formatDuration = (seconds: number | null | undefined): string => {
   const restMinutes = minutes % 60;
   return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
 };
+
+/**
+ * Orthogonalize a polygon ring so building corners are squared to 90-degree
+ * angles along the dominant edge orientation.
+ */
+export const orthogonalizePolygonRing = (coords: [number, number][]): [number, number][] => {
+  if (!coords || coords.length < 3) return coords;
+
+  const isClosed =
+    coords.length > 1 &&
+    Math.abs(coords[0][0] - coords[coords.length - 1][0]) < 1e-12 &&
+    Math.abs(coords[0][1] - coords[coords.length - 1][1]) < 1e-12;
+  const pts = isClosed ? coords.slice(0, -1) : [...coords];
+  const n = pts.length;
+  if (n < 3) return coords;
+
+  const cx = pts.reduce((s, p) => s + p[0], 0) / n;
+  const cy = pts.reduce((s, p) => s + p[1], 0) / n;
+  const cosLat = Math.cos((cy * Math.PI) / 180) || 1;
+
+  // Project into local isotropic planar coordinates around centroid
+  const localPts = pts.map(([lon, lat]) => ({
+    x: (lon - cx) * cosLat,
+    y: lat - cy,
+  }));
+
+  // Compute length-weighted dominant orientation modulo pi/2
+  let sumCos4 = 0;
+  let sumSin4 = 0;
+  for (let i = 0; i < n; i++) {
+    const p0 = localPts[i];
+    const p1 = localPts[(i + 1) % n];
+    const dx = p1.x - p0.x;
+    const dy = p1.y - p0.y;
+    const len = Math.hypot(dx, dy);
+    if (len > 1e-12) {
+      const angle = Math.atan2(dy, dx);
+      sumCos4 += len * Math.cos(4 * angle);
+      sumSin4 += len * Math.sin(4 * angle);
+    }
+  }
+  const dominantAngle = 0.25 * Math.atan2(sumSin4, sumCos4);
+  const cosA = Math.cos(-dominantAngle);
+  const sinA = Math.sin(-dominantAngle);
+
+  // Rotate into dominant-axis frame (u, v)
+  const rotated = localPts.map(({ x, y }) => ({
+    u: x * cosA - y * sinA,
+    v: x * sinA + y * cosA,
+  }));
+
+  // Classify each edge as horizontal ('H', constant v) or vertical ('V', constant u)
+  const edges = rotated.map((p0, i) => {
+    const p1 = rotated[(i + 1) % n];
+    const du = p1.u - p0.u;
+    const dv = p1.v - p0.v;
+    const isHorizontal = Math.abs(du) >= Math.abs(dv);
+    return {
+      axis: isHorizontal ? ('H' as const) : ('V' as const),
+      uMid: 0.5 * (p0.u + p1.u),
+      vMid: 0.5 * (p0.v + p1.v),
+    };
+  });
+
+  const strictlyAlternating = edges.every((e, i) => e.axis !== edges[(i + 1) % n].axis);
+
+  let orthoUV: { u: number; v: number }[];
+
+  if (strictlyAlternating) {
+    orthoUV = rotated.map((_, i) => {
+      const prevEdge = edges[(i - 1 + n) % n];
+      const nextEdge = edges[i];
+      const u = prevEdge.axis === 'V' ? prevEdge.uMid : nextEdge.uMid;
+      const v = prevEdge.axis === 'H' ? prevEdge.vMid : nextEdge.vMid;
+      return { u, v };
+    });
+  } else if (n === 4) {
+    // Oriented minimum bounding rectangle preserving winding & start corner
+    const minU = Math.min(...rotated.map((p) => p.u));
+    const maxU = Math.max(...rotated.map((p) => p.u));
+    const minV = Math.min(...rotated.map((p) => p.v));
+    const maxV = Math.max(...rotated.map((p) => p.v));
+
+    let signedArea = 0;
+    for (let i = 0; i < 4; i++) {
+      const p0 = rotated[i];
+      const p1 = rotated[(i + 1) % 4];
+      signedArea += p0.u * p1.v - p1.u * p0.v;
+    }
+    const ccwRect = [
+      { u: minU, v: minV },
+      { u: maxU, v: minV },
+      { u: maxU, v: maxV },
+      { u: minU, v: maxV },
+    ];
+    const rect = signedArea >= 0 ? ccwRect : [...ccwRect].reverse();
+
+    // Rotate corner array so index 0 is closest to rotated[0]
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < 4; i++) {
+      const d = Math.hypot(rect[i].u - rotated[0].u, rect[i].v - rotated[0].v);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    orthoUV = [0, 1, 2, 3].map((k) => rect[(bestIdx + k) % 4]);
+  } else {
+    orthoUV = rotated.map((point) => ({ ...point }));
+    // Consecutive same-axis edges must share one coordinate, including at ring closure.
+    for (const axis of ['H', 'V'] as const) {
+      const coordinate = axis === 'H' ? 'v' : 'u';
+      const visited = new Set<number>();
+      for (let start = 0; start < n; start++) {
+        if (visited.has(start)) continue;
+        const component: number[] = [];
+        const pending = [start];
+        while (pending.length) {
+          const index = pending.pop()!;
+          if (visited.has(index)) continue;
+          visited.add(index);
+          component.push(index);
+          const previous = (index - 1 + n) % n;
+          if (edges[index].axis === axis) pending.push((index + 1) % n);
+          if (edges[previous].axis === axis) pending.push(previous);
+        }
+        const average =
+          component.reduce((sum, index) => sum + rotated[index][coordinate], 0) / component.length;
+        for (const index of component) orthoUV[index][coordinate] = average;
+      }
+    }
+  }
+
+  // Rotate back by +dominantAngle and convert to WGS84 [lon, lat]
+  const cosB = Math.cos(dominantAngle);
+  const sinB = Math.sin(dominantAngle);
+  const outRing: [number, number][] = orthoUV.map(({ u, v }) => {
+    const x = u * cosB - v * sinB;
+    const y = u * sinB + v * cosB;
+    return [cx + x / cosLat, cy + y];
+  });
+
+  outRing.push([outRing[0][0], outRing[0][1]]);
+  return outRing;
+};
+
+/** A drawn building with its corners squared; any other geometry unchanged. */
+export const squareBuilding = (geometry: GeoJSON.Geometry): GeoJSON.Geometry =>
+  geometry.type === 'Polygon' && geometry.coordinates.length > 0
+    ? {
+        type: 'Polygon',
+        coordinates: [
+          orthogonalizePolygonRing(geometry.coordinates[0] as [number, number][]),
+          ...geometry.coordinates.slice(1),
+        ],
+      }
+    : geometry;
