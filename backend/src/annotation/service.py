@@ -51,6 +51,7 @@ from src.annotation.schemas import (
     task_status_inputs,
 )
 from src.auth.models import User
+from src.buildings import lifecycle as buildings
 from src.campaigns.models import Campaign
 from src.campaigns.policy import (
     build_policy_context,
@@ -143,6 +144,11 @@ def record_annotation_deletions(
 def deletion_cursor_expired(since: datetime, now: datetime) -> bool:
     """Whether deletions since ``since`` can still be answered from tombstones."""
     return now - since > DELETION_RETENTION
+
+
+def _reopen_scenes(db: Session, campaign: Campaign, owners: set[tuple[UUID, int]]) -> None:
+    """Building campaigns: an edited scene is no longer finished (src.buildings)."""
+    record_annotation_deletions(db, campaign.id, buildings.reopen_scenes(db, campaign, owners))
 
 
 def get_deleted_annotation_ids(db: Session, campaign_id: int, since: datetime) -> list[int]:
@@ -603,6 +609,8 @@ def add_annotation_for_task(
     if annotation_create.label_id is not None:
         validate_label_id(campaign, annotation_create.label_id)
 
+    buildings.check_scene_outcome(db, campaign, annotation_task, user_id, annotation_create)
+
     normalized_form_values = validate_annotation_form_values(
         campaign,
         annotation_create.form_values,
@@ -649,6 +657,8 @@ def add_annotation_for_task(
             annotation_create.active_ms / 1000
         )
 
+    # A Skip after a hand-in leaves a scene unfinished, which withdraws it.
+    buildings.revalidate_hand_in(db, campaign, user_id)
     db.commit()
     db.refresh(annotation)
     annotation.counts_toward_completion = counts_toward_completion(policy, has_assignments, ctx)
@@ -739,6 +749,7 @@ def create_annotation(
     """
     _require_explore_access(db, campaign, user_id)
     _validate_origin_tasks(db, campaign, [annotation_create])
+    scenes = buildings.check_new_buildings(db, campaign, [annotation_create])
 
     if annotation_create.label_id is not None:
         validate_label_id(campaign, annotation_create.label_id)
@@ -758,6 +769,7 @@ def create_annotation(
             geometry.id, campaign, user_id, annotation_create, normalized_form_values
         )
         db.add(annotation)
+        _reopen_scenes(db, campaign, {(user_id, scene) for scene in scenes})
         bump_campaign_annotations_version(db, campaign.id)
         db.commit()
         db.refresh(annotation)
@@ -788,6 +800,7 @@ def create_annotations_bulk(
 
     _require_explore_access(db, campaign, user_id)
     _validate_origin_tasks(db, campaign, annotations_create)
+    scenes = buildings.check_new_buildings(db, campaign, annotations_create)
 
     # Validate the distinct labels once rather than per-annotation.
     for label_id in {a.label_id for a in annotations_create if a.label_id is not None}:
@@ -818,6 +831,7 @@ def create_annotations_bulk(
             )
         ]
         db.add_all(annotations)
+        _reopen_scenes(db, campaign, {(user_id, scene) for scene in scenes})
         bump_campaign_annotations_version(db, campaign.id)
         db.commit()
         return len(annotations)
@@ -870,6 +884,8 @@ def update_annotation(
     _require_explore_access(db, campaign, user_id)
 
     _require_own_annotations(db, [annotation], campaign, user_id, "edit")
+
+    buildings.check_annotation_update(db, campaign, annotation, annotation_update)
 
     try:
         # Update geometry if provided
@@ -930,6 +946,7 @@ def update_annotation(
         if annotation_update.flag_comment is not None and annotation.flagged_for_review:
             annotation.flag_comment = annotation_update.flag_comment
 
+        _reopen_scenes(db, campaign, buildings.building_owners([annotation]))
         bump_campaign_annotations_version(db, annotation.campaign_id)
         db.commit()
         db.refresh(annotation)
@@ -1175,12 +1192,14 @@ def delete_annotation(
         raise HTTPException(status_code=404, detail="Annotation not found in this campaign")
 
     _require_own_annotations(db, [annotation], campaign, user_id, "delete")
+    effects = buildings.deletion_effects(campaign, [annotation])
 
     try:
         # Nothing to reset alongside it: the annotation was the record, so
         # removing it puts the author back to pending on the task by itself.
         delete_rows_and_orphan_geometries(db, [annotation])
-        record_annotation_deletions(db, campaign.id, [annotation_id])
+        reopened = buildings.apply_deletion_effects(db, campaign, effects)
+        record_annotation_deletions(db, campaign.id, [annotation_id, *reopened])
         bump_campaign_annotations_version(db, campaign.id)
         db.commit()
 
@@ -1256,11 +1275,13 @@ def delete_annotations_bulk(
         )
 
     _require_own_annotations(db, list(annotations), campaign, user_id, "delete")
+    effects = buildings.deletion_effects(campaign, annotations)
 
     try:
         delete_rows_and_orphan_geometries(db, annotations)
+        reopened = buildings.apply_deletion_effects(db, campaign, effects)
 
-        record_annotation_deletions(db, campaign.id, sorted(found_ids))
+        record_annotation_deletions(db, campaign.id, sorted(found_ids | set(reopened)))
         bump_campaign_annotations_version(db, campaign.id)
         db.commit()
         return len(annotations)

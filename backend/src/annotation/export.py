@@ -10,6 +10,7 @@ annotation/forms.py (form-field parsing) and annotation/completion.py
 (counts-toward-completion attachment).
 """
 
+from typing import Literal
 from uuid import UUID
 
 import numpy as np
@@ -28,6 +29,7 @@ from src.annotation.models import (
 )
 from src.annotation.schemas import compute_task_status_value, task_status_inputs
 from src.auth.models import User
+from src.buildings.config import building_scenes
 from src.campaigns.form_fields import CategoryFormField, DateFormField, FormField, form_field_slug
 from src.campaigns.models import Campaign
 
@@ -527,16 +529,31 @@ def build_export_records(
     return records, canonical_annotations, columns
 
 
+ExportKind = Literal["all", "predictions", "references"]
+
+
+def resolve_export_kind(campaign: Campaign, kind: ExportKind | None) -> ExportKind:
+    """Building campaigns export what annotators drew unless references are asked for;
+    references are imported footprints (``source_id`` set) and never mix in by default.
+    Other campaigns export everything, as before."""
+    if kind is not None:
+        return kind
+    return "predictions" if building_scenes(campaign) is not None else "all"
+
+
 def fetch_annotations_with_context(
-    db: Session, campaign: Campaign
+    db: Session, campaign: Campaign, kind: ExportKind = "all"
 ) -> tuple[list[Annotation], dict[UUID, str]]:
-    """Fetch all annotations for a campaign with user emails resolved and
+    """Fetch the campaign's annotations of ``kind`` with user emails resolved and
     ``counts_toward_completion`` attached (the one DB touch of the export)."""
+    query = select(Annotation).where(Annotation.campaign_id == campaign.id)
+    if kind == "predictions":
+        query = query.where(Annotation.source_id.is_(None))
+    elif kind == "references":
+        query = query.where(Annotation.source_id.is_not(None))
     annotations = (
         db.execute(
-            select(Annotation)
-            .where(Annotation.campaign_id == campaign.id)
-            .options(
+            query.options(
                 joinedload(Annotation.geometry),
                 joinedload(Annotation.annotation_task).selectinload(AnnotationTask.assignments),
                 joinedload(Annotation.origin_task),
@@ -559,6 +576,7 @@ def build_annotations_export(
     db: Session,
     campaign: Campaign,
     merge_on_agreement: bool = False,
+    kind: ExportKind | None = None,
 ) -> pd.DataFrame:
     """Build CSV export of all annotations and tasks for a campaign.
 
@@ -571,7 +589,9 @@ def build_annotations_export(
     columns) stay un-prefixed so the consumer can tell their IDs apart from
     ours.
     """
-    annotations, user_email_map = fetch_annotations_with_context(db, campaign)
+    annotations, user_email_map = fetch_annotations_with_context(
+        db, campaign, resolve_export_kind(campaign, kind)
+    )
     records, _canonical, columns = build_export_records(
         annotations=annotations,
         campaign=campaign,
@@ -584,6 +604,9 @@ def build_annotations_export(
         for col in columns:
             record.setdefault(col, np.nan)
 
+    if not records and building_scenes(campaign) is not None:
+        # An empty building export still says what its rows would have been.
+        columns = list(_STACNOTATOR_COLUMN_ORDER)
     return pd.DataFrame(records, columns=list(columns))
 
 
@@ -591,6 +614,7 @@ def build_annotations_geojson_export(
     db: Session,
     campaign: Campaign,
     merge_on_agreement: bool = False,
+    kind: ExportKind | None = None,
 ) -> dict:
     """Build a GeoJSON FeatureCollection of all annotations for a campaign.
 
@@ -598,7 +622,9 @@ def build_annotations_geojson_export(
     raised when a merge is requested but conflicts exist). GeoJSON features
     use the canonical annotation's geometry for merged rows.
     """
-    annotations, user_email_map = fetch_annotations_with_context(db, campaign)
+    annotations, user_email_map = fetch_annotations_with_context(
+        db, campaign, resolve_export_kind(campaign, kind)
+    )
     records, canonical_annotations, columns = build_export_records(
         annotations=annotations,
         campaign=campaign,

@@ -11,6 +11,7 @@ from pydantic import (
     model_validator,
 )
 
+from src.buildings.config import BuildingScenes
 from src.campaigns.form_fields import FormField, validate_form_fields
 from src.canvas.schemas import CanvasLayoutOut
 from src.custom_layers.schemas import CustomMapOut, VectorLayerOut
@@ -210,6 +211,8 @@ class CampaignSettingsOut(BaseModel):
     labelling_policy: LabellingPolicy
     form_fields: list[FormField] = []
     research_sharing: bool
+    # Set on building-footprint campaigns; see src.buildings.config.
+    building_scenes: BuildingScenes | None = None
 
     @field_validator("labels", mode="before")
     @classmethod

@@ -21,6 +21,7 @@ from src.annotation.embeddings_service import EMBEDDING_RUN
 from src.annotation.router import router as annotations_router
 from src.auth.router import router as auth_router
 from src.background import fail_stale_status_runs
+from src.buildings.router import router as buildings_router
 from src.campaigns.router import router as campaigns_router
 from src.config import (
     DEV_APIKEY_ENCRYPTION_SECRET,
@@ -374,6 +375,7 @@ app.include_router(organizations_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
 app.include_router(campaigns_router, prefix="/api")
 app.include_router(annotations_router, prefix="/api")
+app.include_router(buildings_router, prefix="/api")
 app.include_router(timeseries_router, prefix="/api")
 app.include_router(sampling_design_router, prefix="/api")
 app.include_router(imagery_router, prefix="/api")

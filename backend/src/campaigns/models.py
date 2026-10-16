@@ -242,5 +242,9 @@ class CampaignSettings(Base):
         nullable=False,
     )
 
+    # Set on building-footprint campaigns: each task is a scene annotators fill with
+    # building polygons. Names the labels involved (src.buildings.config.BuildingScenes).
+    building_scenes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Relationships
     campaign: Mapped["Campaign"] = relationship(back_populates="settings")

@@ -15,6 +15,8 @@ from src.annotation.geometries import (
     delete_rows_and_orphan_geometries,
 )
 from src.annotation.models import Annotation, AnnotationTask, Embedding
+from src.buildings.config import building_scenes
+from src.buildings.lifecycle import scene_building_count
 from src.campaigns import assignments
 from src.campaigns.models import (
     Campaign,
@@ -653,10 +655,30 @@ def delete_annotation_tasks(
         )
     ).all()
 
+    is_building = building_scenes(db.get(Campaign, campaign_id)) is not None
+    if is_building and not delete_annotations:
+        drawn = scene_building_count(db, campaign_id, task_ids)
+        if drawn:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"These scenes hold {drawn} building(s); delete them with their "
+                    "annotations, or they would lose their scene"
+                ),
+            )
+
     if delete_annotations:
-        annotations = db.scalars(
-            select(Annotation).where(Annotation.annotation_task_id.in_(task_ids))
-        ).all()
+        annotations = list(
+            db.scalars(select(Annotation).where(Annotation.annotation_task_id.in_(task_ids))).all()
+        )
+        if is_building:
+            # A building campaign's buildings belong to their scene, so they go with it.
+            annotations += db.scalars(
+                select(Annotation).where(
+                    Annotation.origin_task_id.in_(task_ids),
+                    Annotation.annotation_task_id.is_(None),
+                )
+            ).all()
         if annotations:
             delete_rows_and_orphan_geometries(db, annotations)
             annotation_service.record_annotation_deletions(

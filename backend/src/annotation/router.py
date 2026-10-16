@@ -20,6 +20,7 @@ from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
 
 from src.annotation import claims, embeddings_service, export, ingest, service, spatial
+from src.annotation.export import ExportKind
 from src.annotation.models import Annotation
 from src.annotation.schemas import (
     AnnotationChangeOut,
@@ -421,6 +422,7 @@ def batch_delete_annotations(
 @router.get("/campaigns/{campaign_id}/export-annotations")
 def export_annotations(
     merge_on_agreement: bool = False,
+    kind: ExportKind | None = None,
     db: Session = Depends(get_db),
     campaign: Campaign = Depends(require_campaign_access),
 ):
@@ -430,9 +432,13 @@ def export_annotations(
     annotators all agreed on the same label are collapsed into a single
     row. Tasks with disagreement (conflict) cause the request to fail
     with HTTP 400 - resolve the conflicts first.
+
+    ``kind`` picks drawn annotations (``predictions``), imported ones
+    (``references``, which carry a ``source_id``) or ``all``. It defaults to
+    ``predictions`` in building campaigns and ``all`` elsewhere.
     """
     annotations_df = export.build_annotations_export(
-        db, campaign, merge_on_agreement=merge_on_agreement
+        db, campaign, merge_on_agreement=merge_on_agreement, kind=kind
     )
     buffer = io.StringIO()
     annotations_df.to_csv(buffer, index=False)
@@ -447,6 +453,7 @@ def export_annotations(
 @router.get("/campaigns/{campaign_id}/export-annotations-geojson")
 def export_annotations_geojson(
     merge_on_agreement: bool = False,
+    kind: ExportKind | None = None,
     db: Session = Depends(get_db),
     campaign: Campaign = Depends(require_campaign_access),
 ):
@@ -455,7 +462,7 @@ def export_annotations_geojson(
     See ``export_annotations`` for the meaning of ``merge_on_agreement``.
     """
     geojson = export.build_annotations_geojson_export(
-        db, campaign, merge_on_agreement=merge_on_agreement
+        db, campaign, merge_on_agreement=merge_on_agreement, kind=kind
     )
     buffer = io.StringIO(json.dumps(geojson))
     return StreamingResponse(

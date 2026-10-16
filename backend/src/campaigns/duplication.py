@@ -487,6 +487,13 @@ def duplicate_campaign(
                     if annotation.annotation_task_id is not None
                     else None
                 ),
+                # The copy's own task, or none when the tasks stayed behind: never the
+                # source campaign's task.
+                origin_task_id=(
+                    task_map.get(annotation.origin_task_id)
+                    if annotation.origin_task_id is not None
+                    else None
+                ),
                 imagery_slice_id=(
                     slice_map.get(annotation.imagery_slice_id)
                     if annotation.imagery_slice_id is not None

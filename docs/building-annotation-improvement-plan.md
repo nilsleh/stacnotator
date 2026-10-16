@@ -188,31 +188,59 @@ GeoJSON export already writes one row per building with `stacnotator_annotation_
 
 Re-implement these behaviours from the old work on `develop`'s services:
 
-- [ ] Polygons must be valid, finite, 2D, labelled and inside their cell; batches validate
+- [x] Polygons must be valid, finite, 2D, labelled and inside their cell; batches validate
   everything before replacing saved buildings.
-- [ ] Scene outcomes: **Complete** requires at least one building; **Empty** is refused
+- [x] Scene outcomes: **Complete** requires at least one building; **Empty** is refused
   while buildings remain; **Skip** keeps drawings; **Draft** does not count as done.
   Creating, editing or deleting a building reopens a finished scene.
-- [ ] Building polygons must have `origin_task_id` set to a scene in the same campaign.
+- [x] Building polygons must have `origin_task_id` set to a scene in the same campaign.
   `develop` makes it optional and sets it to NULL when the task is deleted, so refuse
   scene deletion while polygons exist (or delete them explicitly) to avoid orphans.
-- [ ] Explore-mode shapes must not join a scene: in building campaigns a shape with an
+- [x] Explore-mode shapes must not join a scene: in building campaigns a shape with an
   `origin_task_id` must lie inside that scene (boundary rule), and only scene mode sends it.
-- [ ] Campaign duplication remaps `origin_task_id` through the task map (`develop` copies
+- [x] Campaign duplication remaps `origin_task_id` through the task map (`develop` copies
   it unchanged, pointing duplicates at the source campaign's tasks).
-- [ ] Every building carries a confidence (1-5); creates without one are refused and
+- [x] Every building carries a confidence (1-5); creates without one are refused and
   updates cannot clear it. **Complete** is refused while any building is unscored.
-- [ ] **Hand in** (not authoritative): a per-user, per-campaign record that the assigned
+- [x] **Hand in** (not authoritative): a per-user, per-campaign record that the assigned
   scenes are finished. Allowed only when every assigned scene is Complete or Empty;
   Skipped and Draft scenes block it. Editing a building after hand-in reopens that scene
   and withdraws the hand-in until it is handed in again (proposed default). Needs a new
   table, so this is the one schema change in the port.
-- [ ] Imported references get a distinct `source_id` per campaign
-  (`uq_annotation_campaign_source`), keeping each reference polygon separate too.- [ ] References never count toward completion and are never mixed into user output.
-- [ ] Exports: one feature per building carrying its annotation `id` and scene `origin_task_id` (never merged by agreement), predictions by
+- [x] Imported references get a distinct `source_id` per campaign
+  (`uq_annotation_campaign_source`), keeping each reference polygon separate too.
+- [x] References never count toward completion and are never mixed into user output.
+- [x] Exports: one feature per building carrying its annotation `id` and scene `origin_task_id` (never merged by agreement), predictions by
   default with references only on request, and a header-only file when empty.
 
 **Acceptance:** backend tests ported from `test_building_lifecycle.py` pass on `develop`.
+**Done:** `tests/test_building_lifecycle.py` (rules, outcomes, hand-in, exports, scene
+deletion) and a live API walk-through on campaign 19 (34 checks) pass; full suite green.
+
+How it maps onto `develop` (`backend/src/buildings/`, migration `bb1buildings`):
+
+- `settings.building_scenes` (JSONB) marks a building campaign and names its labels:
+  `Building` (polygon, id 1) for shapes, and two outcome labels, `Buildings mapped` (2,
+  Complete) and `No buildings` (3, Empty). The scene outcome is the user's task annotation,
+  so `develop`'s status logic is untouched: Complete/Empty carry a label (done), Skip is a
+  label-less submit (skipped), and Draft is no outcome while buildings exist (pending).
+- Hooks in `annotation/service.py` (create, batch create, update, delete, task submit)
+  call `buildings.lifecycle`; on other campaigns they do nothing. A building edit reopens
+  the owner's scene by deleting their outcome (tombstoned for the changes poll).
+- Explore shapes in building campaigns are held to the same rules (building label, a
+  scene, a score, inside that scene), so a "Near task" shape outside the scene is refused.
+- Routes: `GET .../buildings/progress`, `POST|DELETE .../buildings/hand-in`,
+  `GET .../buildings/scenes/{task}/buildings` (the caller's), and
+  `POST .../buildings/scenes/{task}/draft` (clear the outcome).
+- A user's scenes are those assigned to them, or every scene when none are.
+- Hand-in is withdrawn whenever one of the user's scenes stops being Complete or Empty
+  (a building edit, Skip, or Draft). This was the proposed default and is kept; nobody
+  confirmed it in this session.
+- Duplication remaps `origin_task_id` for every campaign (a copy never points at the
+  source's tasks; without tasks it is cleared).
+- Exports take `kind=predictions|references|all`; building campaigns default to
+  predictions, other campaigns to `all` (unchanged). Scene outcome rows stay in the
+  predictions export, since Empty scenes are results too.
 
 ### P4 - Building lifecycle (frontend)
 

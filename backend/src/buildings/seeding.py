@@ -39,6 +39,7 @@ from src.annotation.models import (
     AnnotationTaskAssignment,
 )
 from src.auth.models import User
+from src.buildings.config import BuildingScenes
 from src.campaigns.models import Campaign, TaskSet
 from src.campaigns.schemas import CampaignSettingsCreate, LabelBase
 from src.campaigns.service import create_campaign, delete_campaign
@@ -67,7 +68,12 @@ from src.tilers.providers import (
 logger = logging.getLogger(__name__)
 
 RESET_CONFIRMATION = "DELETE-ANNOTATIONS"
-BUILDING_LABEL_ID = 1
+BUILDING_SCENES = BuildingScenes(building_label_id=1, complete_label_id=2, empty_label_id=3)
+LABELS = [
+    LabelBase(id=1, name="Building", geometry_type="polygon"),
+    LabelBase(id=2, name="Buildings mapped"),
+    LabelBase(id=3, name="No buildings"),
+]
 VISUALIZATION = "RGB"
 COG_SUBDIR = "curated"
 # Registering a COG builds its STAC item on the tiler, which takes 10-50 s locally.
@@ -376,7 +382,7 @@ def _insert_references(
                 "geometry_id": gid,
                 "campaign_id": campaign_id,
                 "created_by_user_id": user_id,
-                "label_id": BUILDING_LABEL_ID,
+                "label_id": BUILDING_SCENES.building_label_id,
                 "source_id": source_id,
             }
             for source_id, gid in enumerate(geometry_ids, start=1)
@@ -402,7 +408,7 @@ def _create_campaign(
         mode="tasks",
         project_id=project_id,
         settings=CampaignSettingsCreate(
-            labels=[LabelBase(id=BUILDING_LABEL_ID, name="Building", geometry_type="polygon")],
+            labels=LABELS,
             bbox_west=bbox["west"],
             bbox_south=bbox["south"],
             bbox_east=bbox["east"],
@@ -411,6 +417,8 @@ def _create_campaign(
         user_id=user_id,
     )
     campaign_id = campaign.id
+    BUILDING_SCENES.check_labels(campaign.settings.labels)
+    campaign.settings.building_scenes = BUILDING_SCENES.model_dump()
     # The tiler calls take minutes; don't sit idle in a transaction meanwhile.
     db.commit()
     try:
