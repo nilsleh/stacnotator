@@ -255,6 +255,7 @@ def register_cog_on_tiler(
     tile_scope: str,
     internal_storage: bool = False,
     sealed_storage_access: dict | None = None,
+    timeout: float = 60,
 ) -> str:
     """Register a single COG as an owner-scoped pgstac search on the hosted tiler.
 
@@ -278,7 +279,7 @@ def register_cog_on_tiler(
         f"{_register_base(tiler)}/searches/register-cog",
         json=body,
         headers={"Authorization": f"Bearer {token}"},
-        timeout=60,
+        timeout=timeout,
     )
     resp.raise_for_status()
     result = resp.json()

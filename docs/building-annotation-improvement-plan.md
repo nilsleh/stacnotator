@@ -142,26 +142,47 @@ Spike outcomes carried into P3/P4 (from the owner's manual test on 11 curated sc
   the only action on finished scenes. See the hand-in requirements in P3/P4.
 ### P1 - Curated imagery
 
-- [ ] Put the five curated datasets in `./cogs` (or point `COG_DIR` at `data/imagery`).
-- [ ] Show the chips themselves, not substitute imagery. `develop`'s custom maps are
+- [x] Put the five curated datasets in `./cogs` (or point `COG_DIR` at `data/imagery`).
+- [x] Show the chips themselves, not substitute imagery. `develop`'s custom maps are
   single-band colormap overlays (multi-band COGs fail with `asset_as_band`), so register
   each chip on the local tiler and serve it as an imagery source whose tile URL carries the
   dataset's band/stretch (old `bidx` / `rescale`, e.g. Khartoum `1,2,3` at `0-1400`,
   Atlanta `5,3,2` at `0-1200`). Verify the browser's tiler cookie covers these tiles.
 
 **Acceptance:** all five datasets show real image pixels, not blank or constant tiles.
+**Done:** campaigns 14-18 render Rio, Khartoum (PS-RGB and the 1.2 m MS source), Shanghai,
+Atlanta (`5,3,2`) and the SN7 months in the browser.
+
+Notes: `scripts/seed_building_datasets.py` copies the chips to `cogs/curated/` (mounted at
+`/data/cogs/curated`). `src/buildings/seeding.py` registers each chip with the tiler's
+`register-cog` (10-50 s per COG locally, so the call takes a `timeout`), and mosaics
+multi-chip slices with one search over the chips' `custom-maps` item ids. Slice tile URLs
+must carry `tile_provider` = the tiler name: the browser only sends the tiler cookie for a
+self-hosted provider, and without it every chip tile is refused. Some SN2 chips contain
+black no-data areas; that is the source imagery.
 
 ### P2 - Building campaigns and cells
 
-- [ ] Generate grid cells using `develop`'s `grid` strategy, or add a mesh option if cell
+- [x] Generate grid cells using `develop`'s `grid` strategy, or add a mesh option if cell
   size/alignment cannot match. Keep `raw_source_data` markers (`chip_id`, `dataset_key`)
   so building cells are recognisable.
-- [ ] Port `scripts/seed_building_datasets.py` to `develop`'s organization/project/campaign
+- [x] Port `scripts/seed_building_datasets.py` to `develop`'s organization/project/campaign
   APIs: reuse existing campaigns by default; `--reset` requires
   `--confirm-reset DELETE-ANNOTATIONS`; import reference footprints.
-- [ ] Confirm `origin_task_id` can hold a scene's building collection (load, count and export per scene).
+- [x] Confirm `origin_task_id` can hold a scene's building collection (load, count and export per scene).
 
 **Acceptance:** seeding twice creates no duplicates; cells and references appear on the map.
+**Done.**
+
+Notes: as in the reference, each chip is one cell (its bbox), so the `grid` strategy is not
+used: grid cells would not line up with the chips. Cells carry `chip_id`, `dataset_key`,
+`subset`, `split`, `cog_href`, `reference_buildings` and `is_empty_reference`. The seeder
+runs inside the backend container on `develop`'s services (no HTTP API covers tiler
+registration), one campaign per dataset in project "Buildings (local)", all scenes assigned
+to `local-user`. References are standalone annotations with a per-campaign `source_id` and
+no `origin_task_id`, so they never join a scene; they are clipped to their cell. The
+GeoJSON export already writes one row per building with `stacnotator_annotation_id`,
+`stacnotator_origin_task_id` and `stacnotator_source_id`.
 
 ### P3 - Building lifecycle (backend)
 
