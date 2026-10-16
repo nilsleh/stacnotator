@@ -123,6 +123,10 @@ class SeedResult:
     created: bool
     scenes: int = 0
     references: int = 0
+    # --refresh-imagery on a reused campaign: tile URLs re-registered, and how many of
+    # them the campaign does not hold (a changed tiler or manifest).
+    refreshed: int = 0
+    unmatched: int = 0
 
 
 def tiler_cog_item_id(cog_url: str) -> str:
@@ -296,18 +300,29 @@ class TilerRegistrar:
         return url
 
     def stamp(self, db: Session, campaign_id: int) -> None:
+        self._stamp(self._tile_urls(db, campaign_id))
+
+    @staticmethod
+    def _tile_urls(db: Session, campaign_id: int) -> list[SliceTileUrl]:
+        return list(
+            db.scalars(
+                select(SliceTileUrl)
+                .join(ImagerySlice, SliceTileUrl.slice_id == ImagerySlice.id)
+                .join(ImageryCollection, ImagerySlice.collection_id == ImageryCollection.id)
+                .join(ImagerySource, ImageryCollection.source_id == ImagerySource.id)
+                .where(ImagerySource.campaign_id == campaign_id)
+            ).all()
+        )
+
+    def stored_tile_urls(self, db: Session, campaign_id: int) -> set[str]:
+        return {row.tile_url for row in self._tile_urls(db, campaign_id)}
+
+    def _stamp(self, rows: list[SliceTileUrl]) -> None:
         """Mark the campaign's tile URLs as served by our tiler, as registration does.
 
         The browser only sends the tiler cookie for tile URLs with a self-hosted
         ``tile_provider``; without it every chip tile is refused.
         """
-        rows = db.scalars(
-            select(SliceTileUrl)
-            .join(ImagerySlice, SliceTileUrl.slice_id == ImagerySlice.id)
-            .join(ImageryCollection, ImagerySlice.collection_id == ImageryCollection.id)
-            .join(ImagerySource, ImageryCollection.source_id == ImagerySource.id)
-            .where(ImagerySource.campaign_id == campaign_id)
-        ).all()
         for row in rows:
             row.tile_provider = self.tiler_name
             row.mosaic_id = self.searches[row.tile_url]
@@ -477,11 +492,15 @@ def seed(
     confirm_reset: str | None = None,
     only: set[str] | None = None,
     tiler_name: str | None = None,
+    refresh_imagery: bool = False,
 ) -> list[SeedResult]:
     """Create each dataset's campaign, reusing one that already exists by name.
 
     ``reset`` deletes the existing campaigns first, with every annotation in them, so it
-    needs ``confirm_reset=RESET_CONFIRMATION``.
+    needs ``confirm_reset=RESET_CONFIRMATION``. ``refresh_imagery`` re-registers a reused
+    campaign's chips on the tiler (after a tiler database was lost or restored) without
+    changing the campaign: registration is deterministic, so its stored tile URLs work
+    again, and any that would differ are counted as ``unmatched``.
     """
     if reset and confirm_reset != RESET_CONFIRMATION:
         raise ValueError(
@@ -512,10 +531,27 @@ def seed(
     planned = [(d, plan_scenes(d, payload["geojsons"], cog_dir), plan_sources(d)) for d in datasets]
 
     results = []
-    for dataset, scenes, _ in planned:
+    for dataset, scenes, sources in planned:
         existing = _campaigns_named(db, project.id, dataset["name"])
         if existing and not reset:
-            results.append(SeedResult(dataset["key"], existing[0].id, created=False))
+            campaign_id = existing[0].id
+            refreshed = unmatched = 0
+            if refresh_imagery:
+                registrar = TilerRegistrar(tiler_name, tiler, str(campaign_id), cog_dir)
+                stored = registrar.stored_tile_urls(db, campaign_id)
+                db.commit()
+                build_editor_state(sources, registrar)
+                refreshed = len(registrar.searches)
+                unmatched = len(set(registrar.searches) - stored)
+            results.append(
+                SeedResult(
+                    dataset["key"],
+                    campaign_id,
+                    created=False,
+                    refreshed=refreshed,
+                    unmatched=unmatched,
+                )
+            )
             continue
         for old in existing:
             delete_campaign(db, old.id)
@@ -547,6 +583,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--only", nargs="+", help="Dataset keys to seed (default: all)")
     parser.add_argument("--reset", action="store_true", help="Recreate existing campaigns")
     parser.add_argument("--confirm-reset", help=f"Required with --reset: {RESET_CONFIRMATION}")
+    parser.add_argument(
+        "--refresh-imagery",
+        action="store_true",
+        help="Re-register existing campaigns' chips on the tiler (after restoring a backup)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.WARNING)
@@ -562,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
             reset=args.reset,
             confirm_reset=args.confirm_reset,
             only=set(args.only) if args.only else None,
+            refresh_imagery=args.refresh_imagery,
         )
     except ValueError as exc:
         sys.stderr.write(f"error: {exc}\n")
@@ -575,7 +617,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"{r.references} reference buildings\n"
             )
         else:
-            sys.stdout.write(f"reused campaign {r.campaign_id} ({r.key}): unchanged\n")
+            refreshed = (
+                f"; {r.refreshed} tile URL(s) re-registered, {r.unmatched} unmatched"
+                if args.refresh_imagery
+                else ""
+            )
+            sys.stdout.write(f"reused campaign {r.campaign_id} ({r.key}): unchanged{refreshed}\n")
     return 0
 
 

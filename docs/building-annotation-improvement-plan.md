@@ -288,14 +288,20 @@ Notes:
 
 ### P5 - Local tooling and docs
 
-- [ ] Port the backup / verify-backup actions (`scripts/local.ps1`), or document
+- [x] Port the backup / verify-backup actions (`scripts/local.ps1`), or document
   `develop`'s `Makefile` / `deployment/azure/utils` equivalents.
-- [ ] Rewrite [local labeling guide](local-labeling.md) and the [ledger](building-annotation-ledger.md)
+- [x] Rewrite [local labeling guide](local-labeling.md) and the [ledger](building-annotation-ledger.md)
   for the new paths, and port the live browser test to the new UI.
 
 **Acceptance:** a backup restores into a disposable database with all campaigns intact.
+**Done:** `scripts/local.ps1 backup` / `verify-backup` round trip restored 12 campaigns,
+147 scenes and 2232 annotations, matching live, into a throwaway database (dropped
+afterwards). The tiler database is not dumped (pgstac does not restore under `pg_dump`'s
+empty `search_path`); `local.ps1 refresh-imagery` re-registers the chips instead and
+reported 0 unmatched tile URLs. `scripts/building_live_check.js` is the live browser test
+(16 checks, passing on fresh Rio and Shanghai campaigns).
 
-**Milestone:** building annotation works locally on `develop`, ready for exploratory labeling.
+**Milestone:** building annotation works locally on `develop`, ready for exploratory labeling. **Reached** (P0-P5 done).
 
 ## Keeping up with `develop`
 

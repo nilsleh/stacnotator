@@ -8,6 +8,7 @@ deletes their annotations, so it needs --confirm-reset DELETE-ANNOTATIONS.
     python scripts/seed_building_datasets.py                  # all datasets
     python scripts/seed_building_datasets.py --only sn1_rio   # one dataset
     python scripts/seed_building_datasets.py --verify-only    # check files, change nothing
+    python scripts/seed_building_datasets.py --refresh-imagery  # re-register chips on the tiler
 """
 
 import argparse
@@ -77,6 +78,11 @@ def main() -> int:
     parser.add_argument("--reset", action="store_true", help="Recreate existing campaigns")
     parser.add_argument("--confirm-reset", help="Required with --reset: DELETE-ANNOTATIONS")
     parser.add_argument("--verify-only", action="store_true", help="Check files only")
+    parser.add_argument(
+        "--refresh-imagery",
+        action="store_true",
+        help="Re-register existing campaigns' chips on the tiler (after restoring a backup)",
+    )
     parser.add_argument("--container", default=CONTAINER, help="Backend container name")
     args = parser.parse_args()
 
@@ -105,15 +111,29 @@ def main() -> int:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(build_payload(datasets, DATA_DIR), fh)
         run(["docker", "cp", tmp, f"{args.container}:{CONTAINER_PAYLOAD}"])
-        cmd = ["docker", "exec", "-w", "/app", args.container, "python", "-m",
-               "src.buildings.seeding", CONTAINER_PAYLOAD,
-               "--project", args.project, "--user", args.user]
+        cmd = [
+            "docker",
+            "exec",
+            "-w",
+            "/app",
+            args.container,
+            "python",
+            "-m",
+            "src.buildings.seeding",
+            CONTAINER_PAYLOAD,
+            "--project",
+            args.project,
+            "--user",
+            args.user,
+        ]
         if args.only:
             cmd += ["--only", *args.only]
         if args.reset:
             cmd.append("--reset")
         if args.confirm_reset:
             cmd += ["--confirm-reset", args.confirm_reset]
+        if args.refresh_imagery:
+            cmd.append("--refresh-imagery")
         result = subprocess.run(cmd)
         subprocess.run(["docker", "exec", args.container, "rm", "-f", CONTAINER_PAYLOAD])
         return result.returncode
