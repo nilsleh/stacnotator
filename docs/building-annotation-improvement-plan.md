@@ -202,6 +202,11 @@ Re-implement these behaviours from the old work on `develop`'s services:
 - [ ] Hand-in: a progress view (complete / empty / skipped / draft) and a **Hand in** button
   that is enabled once nothing blocks it. Next must not silently wrap from the last scene
   to the first; at the end it shows the summary and the hand-in.
+  Keep the spike's navigation (`spike/scene-drawing` `3a17312f`, `stores/sceneNav.ts`):
+  a **Remaining / All** toggle. Remaining visits untouched scenes, then skipped ones,
+  never the current one; All walks in order and stops at both ends with an end card and
+  "Go to the first remaining scene". The Prev/Next buttons and the W/S keys share it.
+  The canvas layout stays as in `develop`: annotators resize panels with **Edit Layout**.
 - [ ] Hide "Submit authoritative" in building campaigns.
 - [ ] Drawing shows and edits only the active scene's buildings; failed saves and edits stay
   retryable; references stay hidden while drawing.
