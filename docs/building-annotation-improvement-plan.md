@@ -88,15 +88,23 @@ Work on a new local branch `feature/building-on-develop` created from `upstream/
 
 ### P0 - Run `develop` locally
 
-- [ ] Create the branch. Start `develop`'s compose stack with `COMPOSE_PROFILES=tiler`,
+- [x] Create the branch. Start `develop`'s compose stack with `COMPOSE_PROFILES=tiler`,
   `TILERS` / `DEFAULT_TILER` set per `.env.example`, and optionally
   `TILER_CONTEXT=../stacnotator-tiler`. Use a fresh database.
-- [ ] Run `develop`'s backend tests, frontend unit tests and lint to get a clean baseline.
-- [ ] Create the local organization, project and user that `develop` now requires, and
+- [x] Run `develop`'s backend tests, frontend unit tests and lint to get a clean baseline.
+- [x] Create the local organization, project and user that `develop` now requires, and
   accept its terms gate once.
 
 **Acceptance:** an empty campaign opens in the app and a sample COG from `./cogs`
-renders through the local tiler.
+renders through the local tiler. **Done** (commit `4f1c3af4`).
+
+Notes: the stack runs from a gitignored `.env.develop` under compose project `stacdev`
+(fresh volumes). Package installs go through the Microsoft feed proxy (build args), the
+private tiler repo is built from `../stacnotator-tiler`, and the opt-in
+`TILER_LOCAL_COG_DIR=/data/cogs` lets `cog_url` point at the tiler's disk (`develop`'s SSRF
+guard otherwise rejects the documented `/data/cogs/...` paths). Baseline failures were all
+environmental: tiler env vars in 5 custom-map tests, CRLF checkouts for Prettier, and
+5 s vitest timeouts.
 
 ### P0.5 - Scene-drawing spike (go/no-go for the storage model)
 
@@ -105,21 +113,41 @@ shows a "Near task #N" breadcrumb, and polygons drawn there remember that task. 
 breadcrumb clears when leaving explore. Task mode does not draw polygons inside an
 outlined scene. `origin_task_id` therefore means "came from" (provenance), not "belongs to".
 
-- [ ] On a throwaway branch, let task mode in a building campaign draw standalone polygons
+- [x] On a throwaway branch, let task mode in a building campaign draw standalone polygons
   with `origin_task_id` = current task, render the scene outline and only that scene's
   polygons, and reload them.
-- [ ] Decide: keep `origin_task_id` as the scene link (enforced for building campaigns
+- [x] Decide: keep `origin_task_id` as the scene link (enforced for building campaigns
   only), or add a dedicated scene-link column if upstream semantics conflict.
-- [ ] Check that `develop`'s campaign setup can define a polygon `Building` label
+- [x] Check that `develop`'s campaign setup can define a polygon `Building` label
   (`geometry_type: polygon`) alongside task mode.
 
 **Acceptance:** two polygons drawn in one scene survive reload, stay separate (distinct
-`id`s) and are listed only under that scene.
+`id`s) and are listed only under that scene. **Done** on `spike/scene-drawing`.
+
+**Decision (approved 2026-10-16): keep `origin_task_id` as the scene link.** No schema
+change for buildings. Three rules move into P3 (see there): explore-mode shapes must not
+join a scene, campaign duplication must remap the link, and scene deletion must not
+orphan buildings.
+
+Spike outcomes carried into P3/P4 (from the owner's manual test on 11 curated scenes):
+
+- Every building needs a confidence score (1-5). Finishing a polygon opens a score prompt
+  at the shape; keys 1-5 (or a click) store it, Esc discards it. The save runs in the
+  background (key to next drawable: <0.1 s vs 0.1-0.7 s blocking); failed saves stay listed
+  with Retry/Discard.
+- Finishing a polygon must not zoom the map (the Draw interaction stays attached while
+  a building waits for its score), and the draw tool stays armed from scene to scene.
+- `develop` has no "done" step: each Submit is final per task, Next wraps from the last
+  scene to the first, and "Submit authoritative" (a reviewer conflict override) read as
+  the only action on finished scenes. See the hand-in requirements in P3/P4.
 ### P1 - Curated imagery
 
 - [ ] Put the five curated datasets in `./cogs` (or point `COG_DIR` at `data/imagery`).
-- [ ] Register each dataset as a custom map and reproduce the band/stretch settings
-  (old `bidx` / `rescale`) with `develop`'s visualizers.
+- [ ] Show the chips themselves, not substitute imagery. `develop`'s custom maps are
+  single-band colormap overlays (multi-band COGs fail with `asset_as_band`), so register
+  each chip on the local tiler and serve it as an imagery source whose tile URL carries the
+  dataset's band/stretch (old `bidx` / `rescale`, e.g. Khartoum `1,2,3` at `0-1400`,
+  Atlanta `5,3,2` at `0-1200`). Verify the browser's tiler cookie covers these tiles.
 
 **Acceptance:** all five datasets show real image pixels, not blank or constant tiles.
 
@@ -147,6 +175,17 @@ Re-implement these behaviours from the old work on `develop`'s services:
 - [ ] Building polygons must have `origin_task_id` set to a scene in the same campaign.
   `develop` makes it optional and sets it to NULL when the task is deleted, so refuse
   scene deletion while polygons exist (or delete them explicitly) to avoid orphans.
+- [ ] Explore-mode shapes must not join a scene: in building campaigns a shape with an
+  `origin_task_id` must lie inside that scene (boundary rule), and only scene mode sends it.
+- [ ] Campaign duplication remaps `origin_task_id` through the task map (`develop` copies
+  it unchanged, pointing duplicates at the source campaign's tasks).
+- [ ] Every building carries a confidence (1-5); creates without one are refused and
+  updates cannot clear it. **Complete** is refused while any building is unscored.
+- [ ] **Hand in** (not authoritative): a per-user, per-campaign record that the assigned
+  scenes are finished. Allowed only when every assigned scene is Complete or Empty;
+  Skipped and Draft scenes block it. Editing a building after hand-in reopens that scene
+  and withdraws the hand-in until it is handed in again (proposed default). Needs a new
+  table, so this is the one schema change in the port.
 - [ ] Imported references get a distinct `source_id` per campaign
   (`uq_annotation_campaign_source`), keeping each reference polygon separate too.- [ ] References never count toward completion and are never mixed into user output.
 - [ ] Exports: one feature per building carrying its annotation `id` and scene `origin_task_id` (never merged by agreement), predictions by
@@ -158,6 +197,12 @@ Re-implement these behaviours from the old work on `develop`'s services:
 
 - [ ] Build the scene mode from the P0.5 spike: task mode shows the scene outline and draws building polygons.
 - [ ] Add Complete / Mark Empty / Skip / Draft actions to `develop`'s task panel.
+- [ ] Keep the spike's scoring flow: score prompt on finish (1-5 / Esc), background save
+  with retry, no double-click zoom, draw tool armed across scenes.
+- [ ] Hand-in: a progress view (complete / empty / skipped / draft) and a **Hand in** button
+  that is enabled once nothing blocks it. Next must not silently wrap from the last scene
+  to the first; at the end it shows the summary and the hand-in.
+- [ ] Hide "Submit authoritative" in building campaigns.
 - [ ] Drawing shows and edits only the active scene's buildings; failed saves and edits stay
   retryable; references stay hidden while drawing.
 - [ ] Building campaigns queue `pending` + `in_progress` scenes by default; other campaigns
@@ -187,4 +232,5 @@ scene, mark another scene empty, and export. Counts, geometry and statuses persi
 
 - Evaluation and benchmarking of label quality.
 - Agent/MCP work: build on `develop`'s `agents` module rather than porting the old
-  `mcp_server.py` / `evaluation_service.py`.
+  `mcp_server.py` / `evaluation_service.py`. Agents today only answer per task; drawing
+  buildings in a scene (polygons + scene outcome + hand-in) is out of scope for this port.
