@@ -10,8 +10,9 @@ from src.database import Base
 class BuildingHandIn(Base):
     """A user's statement that their scenes in a building campaign are finished.
 
-    Only recorded while every scene assigned to them is Complete or Empty; any later
-    change to one of their scenes withdraws it (the row is deleted).
+    Only recorded while every scene assigned to them is Complete or Empty. It locks
+    those scenes: the user withdraws it (the row is deleted) before changing any of
+    them. A change made by someone else, such as an admin, withdraws it instead.
     """
 
     __tablename__ = "building_hand_ins"

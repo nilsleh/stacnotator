@@ -6,6 +6,7 @@ import { useCampaign, useLabels } from '../../stores/campaign';
 import { buildingScenesOf, useSceneStore, useSceneTaskId } from '../../stores/sceneDrawing';
 import { useWorkStore, type Tool } from '../../stores/work';
 import { onSceneShapeSaved } from '../../drawing';
+import { useHandedIn } from '../../stores/buildingProgress';
 
 const CONFIDENCE_LEVELS = [1, 2, 3, 4, 5];
 
@@ -19,6 +20,7 @@ export function SceneShapes() {
   const loadedFor = useSceneStore((s) => s.taskId);
   const error = useSceneStore((s) => s.error);
   const labels = useLabels();
+  const locked = useHandedIn(campaign.id);
   if (sceneTaskId === null) return null;
 
   const buildingLabelId = buildingScenesOf(campaign)?.building_label_id;
@@ -87,7 +89,7 @@ export function SceneShapes() {
           type="button"
           data-testid="scene-tool-draw"
           className={chip(tool === 'annotate')}
-          disabled={!polygonLabel}
+          disabled={!polygonLabel || locked}
           onClick={() => pick('annotate')}
         >
           Draw {polygonLabel?.name ?? 'building'}
@@ -96,6 +98,7 @@ export function SceneShapes() {
           type="button"
           data-testid="scene-tool-edit"
           className={chip(tool === 'edit')}
+          disabled={locked}
           onClick={() => pick('edit')}
         >
           Edit
@@ -164,7 +167,8 @@ export function SceneShapes() {
               <button
                 type="button"
                 data-testid="scene-shape-delete"
-                className="text-red-600 hover:underline"
+                className="text-red-600 hover:underline disabled:opacity-40 disabled:no-underline"
+                disabled={locked}
                 onClick={() => void remove(a.id)}
               >
                 Delete
@@ -179,7 +183,8 @@ export function SceneShapes() {
                   data-testid="scene-shape-confidence"
                   data-level={level}
                   aria-pressed={a.confidence === level}
-                  className={`w-5 h-5 rounded border text-[10px] ${
+                  disabled={locked}
+                  className={`w-5 h-5 rounded border text-[10px] disabled:opacity-40 ${
                     a.confidence === level
                       ? 'bg-brand-600 text-white border-brand-600'
                       : 'bg-white border-neutral-300 hover:bg-neutral-50'

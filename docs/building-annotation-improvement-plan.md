@@ -204,8 +204,8 @@ Re-implement these behaviours from the old work on `develop`'s services:
   updates cannot clear it. **Complete** is refused while any building is unscored.
 - [x] **Hand in** (not authoritative): a per-user, per-campaign record that the assigned
   scenes are finished. Allowed only when every assigned scene is Complete or Empty;
-  Skipped and Draft scenes block it. Editing a building after hand-in reopens that scene
-  and withdraws the hand-in until it is handed in again (proposed default). Needs a new
+  Skipped and Draft scenes block it. A hand-in locks the user's scenes until they
+  withdraw it (decided by the owner; an admin's change still withdraws it). Needs a new
   table, so this is the one schema change in the port.
 - [x] Imported references get a distinct `source_id` per campaign
   (`uq_annotation_campaign_source`), keeping each reference polygon separate too.
@@ -233,9 +233,10 @@ How it maps onto `develop` (`backend/src/buildings/`, migration `bb1buildings`):
   `GET .../buildings/scenes/{task}/buildings` (the caller's). Draft (clear the outcome)
   deletes the user's task annotation through the regular annotation endpoint.
 - A user's scenes are those assigned to them, or every scene when none are.
-- Hand-in is withdrawn whenever one of the user's scenes stops being Complete or Empty
-  (a building edit, Skip, or Draft). This was the proposed default and is kept; nobody
-  confirmed it in this session.
+- A hand-in locks the user's scenes: their own building writes, Complete, Empty, Skip and
+  Draft get a 409 until they withdraw it, and the scene controls are disabled. A change
+  made by someone else (an admin deleting buildings or scenes) still withdraws it, so a
+  hand-in always means every scene is Complete or Empty.
 - Duplication remaps `origin_task_id` for every campaign (a copy never points at the
   source's tasks; without tasks it is cleared).
 - Exports take `kind=predictions|references|all`; building campaigns default to

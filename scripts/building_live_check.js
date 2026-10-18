@@ -5,8 +5,9 @@
 // Use a freshly seeded building campaign whose scenes are untouched, e.g.
 //   python scripts/seed_building_datasets.py --only sn1_rio --reset --confirm-reset DELETE-ANNOTATIONS
 // It draws two buildings (one squared), reloads, re-scores, deletes one, completes the
-// scene, marks the next one empty, checks the panel, the server and the export, then
-// takes the first scene's outcome off again (Draft).
+// scene, marks the next one empty, checks the panel, the server and the export, takes the
+// first scene's outcome off again (Draft), then finishes everything, hands in, checks the
+// scenes are locked, and withdraws.
 // Headless Chromium from frontend/node_modules (playwright-core); screenshot in data/.
 const path = require('path');
 const { chromium } = require(path.join(__dirname, '..', 'frontend', 'node_modules', 'playwright-core'));
@@ -124,6 +125,31 @@ async function open(page) {
   check('draft clears the outcome', await page.getByTestId('scene-outcome').textContent(), 'Draft');
   const afterDraft = await api(`/campaigns/${CID}/buildings/progress`);
   check('server sees the draft', afterDraft.scenes.find((s) => String(s.task_id) === firstScene)?.state, 'draft');
+
+  // Finish every scene, hand in: the scenes lock until the hand-in is withdrawn.
+  await page.getByTestId('scene-cycle-remaining').click();
+  await page.getByTestId('scene-complete').click();
+  for (let i = 0; i < 30 && (await scene()) === firstScene; i++) await page.waitForTimeout(200);
+  for (let i = 0; i < total - 2; i++) {
+    const at = await scene();
+    await page.getByTestId('scene-empty').click();
+    for (let j = 0; j < 30 && (await scene()) === at && !(await page.getByTestId('scene-all-done').count()); j++) {
+      await page.waitForTimeout(200);
+    }
+  }
+  await page.getByTestId('scene-hand-in').click();
+  await page.waitForSelector('[data-testid=scene-handed-in]', { timeout: 10000 });
+  check('locked notice', await page.getByTestId('scene-locked').count(), 1);
+  check('locked controls', [
+    await page.getByTestId('scene-skip').isDisabled(),
+    await page.getByTestId('scene-tool-draw').isDisabled(),
+  ], [true, true]);
+  await page.getByTestId('scene-withdraw').click();
+  await page.waitForSelector('[data-testid=scene-handed-in]', { state: 'detached', timeout: 10000 });
+  check('unlocked after withdraw', [
+    await page.getByTestId('scene-locked').count(),
+    await page.getByTestId('scene-skip').isDisabled(),
+  ], [0, false]);
   check('no page errors', errors, []);
   console.log(`${checks.filter(Boolean).length}/${checks.length} passed`);
   await browser.close();

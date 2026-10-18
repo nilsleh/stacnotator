@@ -2,6 +2,7 @@ import type { AnnotationTaskOut } from '~/api/client';
 import { useCampaign, useCampaignStore } from '../../stores/campaign';
 import { buildingScenesOf, unsavedIn, useSceneStore } from '../../stores/sceneDrawing';
 import { sceneOutcome } from '../../stores/sceneNav';
+import { useHandedIn } from '../../stores/buildingProgress';
 import { useTasksStore } from '../../stores/tasks';
 import {
   finishScene,
@@ -30,6 +31,7 @@ export function SceneActions({ task }: { task: AnnotationTaskOut }) {
   const loadedFor = useSceneStore((s) => s.taskId);
   const rows = useSceneStore((s) => s.annotations);
   const inFlight = useSceneStore((s) => unsavedIn(s, task.id));
+  const locked = useHandedIn(campaign.id);
   if (!config) return null;
 
   const outcome = sceneOutcome(task, currentUserId, config);
@@ -37,7 +39,7 @@ export function SceneActions({ task }: { task: AnnotationTaskOut }) {
   const unscored = saved.filter((a) => a.confidence == null).length;
   const buildings = saved.length + inFlight;
   const { mayLabel } = taskLabellingPolicy(task);
-  const busy = isSubmitting || !mayLabel;
+  const busy = isSubmitting || !mayLabel || locked;
 
   const completeBlocker =
     inFlight > 0
@@ -108,7 +110,12 @@ export function SceneActions({ task }: { task: AnnotationTaskOut }) {
           Draft
         </button>
       </div>
-      {completeBlocker && saved.length > 0 && (
+      {locked && (
+        <span data-testid="scene-locked" className="text-[11px] text-emerald-800">
+          Handed in: withdraw the hand-in to change this scene.
+        </span>
+      )}
+      {!locked && completeBlocker && saved.length > 0 && (
         <span className="text-[11px] text-neutral-500">{completeBlocker}.</span>
       )}
     </div>

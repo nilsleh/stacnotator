@@ -35,6 +35,13 @@ export const noteOutcomeWritten = (taskId: number) => outcomeWrittenAt.set(taskI
 export const writtenSince = (taskId: number, requestedAt: number) =>
   (outcomeWrittenAt.get(taskId) ?? 0) >= requestedAt;
 
+/** True while the user's scenes in this campaign are handed in, which locks them
+ *  until the hand-in is withdrawn. */
+export const useHandedIn = (campaignId: number | undefined): boolean =>
+  useBuildingProgressStore(
+    (s) => s.campaignId === campaignId && s.progress?.hand_in.handed_in_at != null
+  );
+
 export const useBuildingProgressStore = create<BuildingProgressState>((set, get) => {
   const apply = (campaignId: number, progress: BuildingProgressOut, requestedAt: number) =>
     set({ campaignId, progress, requestedAt, busy: false });

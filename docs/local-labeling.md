@@ -86,8 +86,9 @@ scene still to draw.
    - **All** walks the list in order and stops at both ends.
 
 The **Scenes** panel counts Complete, Empty, Skipped, Draft and To do. Once every scene is
-Complete or Empty, **Hand in** records that your set is finished. Any later change to one of
-your scenes withdraws the hand-in until you hand in again.
+Complete or Empty, **Hand in** records that your set is finished and locks your scenes:
+drawing, scoring, deleting, Complete, Empty, Skip and Draft are refused until you press
+**Withdraw hand-in**. Change what you need, then hand in again.
 
 Explore mode shows every building and the references, but adds no buildings to a scene.
 References are never shown while you draw.

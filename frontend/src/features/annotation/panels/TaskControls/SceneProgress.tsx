@@ -168,7 +168,7 @@ function SceneProgressBody({ sceneTaskId }: { sceneTaskId: number }) {
             Handed in {new Date(handedInAt).toLocaleString()}.
           </span>
           <span className="text-[11px] text-emerald-800">
-            Changing a scene withdraws the hand-in until you hand in again.
+            Your scenes are locked. Withdraw the hand-in to change any of them.
           </span>
           <button
             type="button"

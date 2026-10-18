@@ -40,6 +40,7 @@ import {
   type OutboxShape,
 } from './stores/sceneDrawing';
 import { useWorkStore } from './stores/work';
+import { useHandedIn } from './stores/buildingProgress';
 
 const DRAW_SHAPES: Record<GeometryType, DrawShape> = {
   point: 'Point',
@@ -365,8 +366,10 @@ export function useDrawingInteractions(): {
   onMapClick: ((e: MapClickEvent) => void) | undefined;
 } {
   const isExplore = useCampaignStore((s) => s.workMode === 'explore');
+  // A handed-in scene is locked: nothing is drawn or edited until it is withdrawn.
   const isScene = useSceneTaskId() !== null;
-  const drawable = isExplore || isScene;
+  const locked = useHandedIn(useCampaignStore((s) => s.campaign?.id));
+  const drawable = isExplore || (isScene && !locked);
   const tool = useWorkStore((s) => s.tool);
   const selectedLabelId = useWorkStore((s) => s.selectedLabelId);
   const edit = useWorkStore((s) => s.edit);

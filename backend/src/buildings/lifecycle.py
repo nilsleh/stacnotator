@@ -102,7 +102,16 @@ def _scene_cells(db: Session, campaign_id: int, task_ids: Iterable[int]) -> dict
     return cells
 
 
-def check_new_buildings(db: Session, campaign: Campaign, items: list) -> set[int]:
+def require_not_handed_in(db: Session, campaign_id: int, user_id: UUID) -> None:
+    """A hand-in locks the user's scenes: they withdraw it before changing anything."""
+    if get_hand_in(db, campaign_id, user_id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Your scenes are handed in; withdraw the hand-in to change them",
+        )
+
+
+def check_new_buildings(db: Session, campaign: Campaign, items: list, user_id: UUID) -> set[int]:
     """Validate standalone annotations about to be created; returns the scenes they join.
 
     ``items`` are ``AnnotationCreate``. In a building campaign every drawn shape is a
@@ -112,6 +121,7 @@ def check_new_buildings(db: Session, campaign: Campaign, items: list) -> set[int
     cfg = building_scenes(campaign)
     if cfg is None:
         return set()
+    require_not_handed_in(db, campaign.id, user_id)
     for item in items:
         if item.label_id != cfg.building_label_id:
             raise _bad("Only buildings can be drawn in a building campaign")
@@ -125,12 +135,14 @@ def check_new_buildings(db: Session, campaign: Campaign, items: list) -> set[int
 
 
 def check_annotation_update(
-    db: Session, campaign: Campaign, annotation: Annotation, update
+    db: Session, campaign: Campaign, annotation: Annotation, update, user_id: UUID
 ) -> None:
     """Validate an edit (``AnnotationUpdate``) of a building or a scene outcome."""
     cfg = building_scenes(campaign)
     if cfg is None:
         return
+    if _is_scene_data(annotation) and annotation.created_by_user_id == user_id:
+        require_not_handed_in(db, campaign.id, user_id)
     if annotation.annotation_task_id is not None:
         if update.label_id is not None and update.label_id != annotation.label_id:
             raise _bad("Change a scene's outcome with Complete, Empty, Skip or Draft")
@@ -150,6 +162,11 @@ def check_annotation_update(
         validate_building_geometry(update.geometry_wkt, cells[annotation.origin_task_id])
 
 
+def _is_scene_data(annotation: Annotation) -> bool:
+    """A scene outcome (task annotation) or a building (standalone, with a scene)."""
+    return annotation.annotation_task_id is not None or annotation.origin_task_id is not None
+
+
 def building_owners(annotations: Iterable[Annotation]) -> set[tuple[UUID, int]]:
     """(owner, scene) for every building among ``annotations``."""
     return {
@@ -167,10 +184,16 @@ class DeletionEffects:
     outcome_owners: set[UUID]
 
 
-def deletion_effects(campaign: Campaign, annotations: Iterable[Annotation]) -> DeletionEffects:
+def deletion_effects(
+    db: Session, campaign: Campaign, annotations: Iterable[Annotation], user_id: UUID
+) -> DeletionEffects:
+    """Refuses to delete the caller's own scene data while it is handed in. Anyone else's
+    (an admin cleaning up) goes through and withdraws their hand-in instead."""
     if building_scenes(campaign) is None:
         return DeletionEffects(set(), set())
     annotations = list(annotations)
+    if any(_is_scene_data(a) and a.created_by_user_id == user_id for a in annotations):
+        require_not_handed_in(db, campaign.id, user_id)
     return DeletionEffects(
         building_owners(annotations),
         {a.created_by_user_id for a in annotations if a.annotation_task_id is not None},
@@ -226,6 +249,7 @@ def check_scene_outcome(
     cfg = building_scenes(campaign)
     if cfg is None:
         return
+    require_not_handed_in(db, campaign.id, user_id)
     if submission.is_authoritative:
         raise _bad("Building campaigns have no authoritative submissions")
     label_id = submission.label_id

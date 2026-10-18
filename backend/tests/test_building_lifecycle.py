@@ -44,6 +44,11 @@ def update(**kw):
     return AnnotationUpdate(**{**values, **kw})
 
 
+@pytest.fixture(autouse=True)
+def not_handed_in(monkeypatch):
+    monkeypatch.setattr(lifecycle, "get_hand_in", lambda *a: None)
+
+
 @pytest.fixture
 def cells(monkeypatch):
     monkeypatch.setattr(lifecycle, "_scene_cells", lambda db, cid, ids: {i: CELL for i in ids})
@@ -116,8 +121,8 @@ def test_a_building_may_touch_the_scene_outline():
 
 def test_other_campaigns_are_untouched():
     db = MagicMock()
-    assert lifecycle.check_new_buildings(db, campaign(None), [create(label_id=9)]) == set()
-    lifecycle.check_annotation_update(db, campaign(None), NS(), update(label_id=9))
+    assert lifecycle.check_new_buildings(db, campaign(None), [create(label_id=9)], USER) == set()
+    lifecycle.check_annotation_update(db, campaign(None), NS(), update(label_id=9), USER)
     assert lifecycle.reopen_scenes(db, campaign(None), {(USER, 11)}) == []
     db.scalars.assert_not_called()
     db.execute.assert_not_called()
@@ -136,14 +141,14 @@ def test_other_campaigns_are_untouched():
 )
 def test_new_buildings_need_label_scene_score_and_a_place_in_the_scene(cells, item, match):
     with pytest.raises(HTTPException, match=match):
-        lifecycle.check_new_buildings(MagicMock(), campaign(), [item])
+        lifecycle.check_new_buildings(MagicMock(), campaign(), [item], USER)
 
 
 def test_one_bad_building_fails_the_whole_batch_before_anything_is_written(cells):
     db = MagicMock()
     with pytest.raises(HTTPException):
         lifecycle.check_new_buildings(
-            db, campaign(), [create(), create(geometry_wkt="POINT (0 0)")]
+            db, campaign(), [create(), create(geometry_wkt="POINT (0 0)")], USER
         )
     db.add.assert_not_called()
     db.execute.assert_not_called()
@@ -151,34 +156,81 @@ def test_one_bad_building_fails_the_whole_batch_before_anything_is_written(cells
 
 def test_valid_buildings_report_the_scenes_they_join(cells):
     assert lifecycle.check_new_buildings(
-        MagicMock(), campaign(), [create(), create(origin_task_id=12)]
+        MagicMock(), campaign(), [create(), create(origin_task_id=12)], USER
     ) == {11, 12}
 
 
 def test_building_edits_keep_label_score_and_scene(cells):
-    building = NS(annotation_task_id=None, origin_task_id=11, label_id=1, confidence=3)
+    building = NS(
+        created_by_user_id=USER,
+        annotation_task_id=None,
+        origin_task_id=11,
+        label_id=1,
+        confidence=3,
+    )
     for bad in (
         update(label_id=2),
         update(confidence=0),
         update(geometry_wkt=box(0.009, 0.009, 0.011, 0.011).wkt),
     ):
         with pytest.raises(HTTPException):
-            lifecycle.check_annotation_update(MagicMock(), campaign(), building, bad)
+            lifecycle.check_annotation_update(MagicMock(), campaign(), building, bad, USER)
     lifecycle.check_annotation_update(
-        MagicMock(), campaign(), building, update(geometry_wkt=INSIDE.wkt, confidence=5)
+        MagicMock(), campaign(), building, update(geometry_wkt=INSIDE.wkt, confidence=5), USER
     )
 
 
 def test_an_unscored_building_must_be_scored_when_edited(cells):
-    legacy = NS(annotation_task_id=None, origin_task_id=11, label_id=1, confidence=None)
+    legacy = NS(
+        created_by_user_id=USER,
+        annotation_task_id=None,
+        origin_task_id=11,
+        label_id=1,
+        confidence=None,
+    )
     with pytest.raises(HTTPException, match="confidence"):
-        lifecycle.check_annotation_update(MagicMock(), campaign(), legacy, update(comment="x"))
+        lifecycle.check_annotation_update(
+            MagicMock(), campaign(), legacy, update(comment="x"), USER
+        )
 
 
 def test_a_scene_outcome_cannot_be_relabelled_through_an_edit():
-    outcome = NS(annotation_task_id=11, origin_task_id=None, label_id=2)
+    outcome = NS(created_by_user_id=USER, annotation_task_id=11, origin_task_id=None, label_id=2)
     with pytest.raises(HTTPException, match="Complete, Empty"):
-        lifecycle.check_annotation_update(MagicMock(), campaign(), outcome, update(label_id=3))
+        lifecycle.check_annotation_update(
+            MagicMock(), campaign(), outcome, update(label_id=3), USER
+        )
+
+
+def test_a_hand_in_locks_the_owners_scenes(monkeypatch, cells):
+    monkeypatch.setattr(lifecycle, "get_hand_in", lambda *a: object())
+    building = NS(
+        created_by_user_id=USER,
+        annotation_task_id=None,
+        origin_task_id=11,
+        label_id=1,
+        confidence=3,
+    )
+    for attempt in (
+        lambda: lifecycle.check_new_buildings(MagicMock(), campaign(), [create()], USER),
+        lambda: lifecycle.check_annotation_update(
+            MagicMock(), campaign(), building, update(confidence=5), USER
+        ),
+        lambda: lifecycle.check_scene_outcome(
+            MagicMock(), campaign(), NS(id=11), USER, submission(None)
+        ),
+        lambda: lifecycle.deletion_effects(MagicMock(), campaign(), [building], USER),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            attempt()
+        assert exc.value.status_code == 409
+
+
+def test_an_admin_deleting_handed_in_buildings_is_not_locked_out(monkeypatch):
+    monkeypatch.setattr(lifecycle, "get_hand_in", lambda *a: object())
+    building = NS(created_by_user_id=USER, annotation_task_id=None, origin_task_id=11)
+    effects = lifecycle.deletion_effects(MagicMock(), campaign(), [building], uuid4())
+    assert effects.building_owners == {(USER, 11)}
 
 
 # --- scene outcomes ------------------------------------------------------------
@@ -258,10 +310,15 @@ def test_reopening_clears_only_the_edited_users_outcome_and_their_hand_in(monkey
 def test_deletions_only_count_buildings_and_outcomes():
     building = NS(created_by_user_id=USER, origin_task_id=11, annotation_task_id=None)
     outcome = NS(created_by_user_id=USER, origin_task_id=None, annotation_task_id=11)
-    effects = lifecycle.deletion_effects(campaign(), [building, outcome])
+    effects = lifecycle.deletion_effects(MagicMock(), campaign(), [building, outcome], uuid4())
     assert effects.building_owners == {(USER, 11)}
     assert effects.outcome_owners == {USER}
-    assert lifecycle.deletion_effects(campaign(None), [building, outcome]).building_owners == set()
+    assert (
+        lifecycle.deletion_effects(
+            MagicMock(), campaign(None), [building, outcome], USER
+        ).building_owners
+        == set()
+    )
 
 
 # --- hand-in -------------------------------------------------------------------

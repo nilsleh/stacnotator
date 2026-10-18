@@ -10,7 +10,7 @@ export const pillCls = (active: boolean, extra = '') =>
 
 /** The compact toggle used inside dense panels (the task panel's scene tools). */
 export const chipCls = (active: boolean) =>
-  `px-2 py-1 rounded text-[11px] font-medium border cursor-pointer whitespace-nowrap ${
+  `px-2 py-1 rounded text-[11px] font-medium border cursor-pointer whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
     active
       ? 'bg-brand-600 text-white border-brand-600'
       : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50'

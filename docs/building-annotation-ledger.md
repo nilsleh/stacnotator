@@ -36,7 +36,10 @@ Migration: `bb1buildings` (after `at1mapaccess`).
   - `reopen_scenes`: a building write deletes the owner's outcome (tombstoned for the
     changes poll) and withdraws their hand-in.
   - `deletion_effects` / `apply_deletion_effects`: the same for deletes.
-  - `revalidate_hand_in`: withdraws a hand-in once any of the user's scenes is unfinished.
+  - `require_not_handed_in`: a hand-in locks the owner's scenes; their own creates, edits,
+    deletes and outcome submits get a 409 until they withdraw it.
+  - `revalidate_hand_in`: withdraws a hand-in once any of the user's scenes is unfinished,
+    which only happens when someone else (an admin) changes them.
   - Progress and hand-in helpers.
 - Geometry rule (`validate_building_geometry`): one valid, finite, 2D polygon with area,
   covered by the scene cell plus 1e-8° (vertices snapped onto the outline survive the
@@ -46,7 +49,7 @@ Migration: `bb1buildings` (after `at1mapaccess`).
   - `POST|DELETE .../buildings/hand-in`.
   - `GET .../buildings/scenes/{task}/buildings` (the caller's).
   - Draft (clearing a scene's outcome) has no route of its own: the client deletes its
-    task annotation through `DELETE .../annotations/{id}`, whose hooks withdraw the hand-in.
+    task annotation through `DELETE .../annotations/{id}` (refused while handed in).
 - `seeding.py`: the curated seeder (section below).
 - Changes in `develop`'s own modules:
   - `annotation/service.py`: hooks only.
@@ -127,8 +130,6 @@ Tests: `tests/test_building_lifecycle.py`, `tests/test_building_seeding.py`, and
 
 ## Open points
 
-- Withdrawing the hand-in on any change was the proposed default. It is implemented as
-  proposed and still unconfirmed by the owner.
 - A user's scenes are those assigned to them, or every scene when none are; an
   unassigned shared pool would need a different hand-in scope.
 - Agents and evaluation are out of scope; `develop`'s `agents` module only answers per task.

@@ -749,7 +749,7 @@ def create_annotation(
     """
     _require_explore_access(db, campaign, user_id)
     _validate_origin_tasks(db, campaign, [annotation_create])
-    scenes = buildings.check_new_buildings(db, campaign, [annotation_create])
+    scenes = buildings.check_new_buildings(db, campaign, [annotation_create], user_id)
 
     if annotation_create.label_id is not None:
         validate_label_id(campaign, annotation_create.label_id)
@@ -800,7 +800,7 @@ def create_annotations_bulk(
 
     _require_explore_access(db, campaign, user_id)
     _validate_origin_tasks(db, campaign, annotations_create)
-    scenes = buildings.check_new_buildings(db, campaign, annotations_create)
+    scenes = buildings.check_new_buildings(db, campaign, annotations_create, user_id)
 
     # Validate the distinct labels once rather than per-annotation.
     for label_id in {a.label_id for a in annotations_create if a.label_id is not None}:
@@ -885,7 +885,7 @@ def update_annotation(
 
     _require_own_annotations(db, [annotation], campaign, user_id, "edit")
 
-    buildings.check_annotation_update(db, campaign, annotation, annotation_update)
+    buildings.check_annotation_update(db, campaign, annotation, annotation_update, user_id)
 
     try:
         # Update geometry if provided
@@ -1192,7 +1192,7 @@ def delete_annotation(
         raise HTTPException(status_code=404, detail="Annotation not found in this campaign")
 
     _require_own_annotations(db, [annotation], campaign, user_id, "delete")
-    effects = buildings.deletion_effects(campaign, [annotation])
+    effects = buildings.deletion_effects(db, campaign, [annotation], user_id)
 
     try:
         # Nothing to reset alongside it: the annotation was the record, so
@@ -1275,7 +1275,7 @@ def delete_annotations_bulk(
         )
 
     _require_own_annotations(db, list(annotations), campaign, user_id, "delete")
-    effects = buildings.deletion_effects(campaign, annotations)
+    effects = buildings.deletion_effects(db, campaign, annotations, user_id)
 
     try:
         delete_rows_and_orphan_geometries(db, annotations)
