@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import {
   getBuildingProgress,
   handInBuildings,
-  markSceneDraft,
   withdrawBuildingHandIn,
   type BuildingProgressOut,
 } from '~/api/client';
@@ -22,9 +21,7 @@ interface BuildingProgressState {
   busy: boolean;
   load: (campaignId: number) => Promise<void>;
   handIn: (campaignId: number) => Promise<boolean>;
-  withdraw: (campaignId: number) => Promise<void>;
-  /** Clear the user's outcome on a scene, keeping its buildings as a draft. */
-  markDraft: (campaignId: number, taskId: number) => Promise<boolean>;
+  withdraw: (campaignId: number) => Promise<boolean>;
 }
 
 let requestSeq = 0;
@@ -91,23 +88,11 @@ export const useBuildingProgressStore = create<BuildingProgressState>((set, get)
         'Could not hand in'
       ),
 
-    withdraw: async (campaignId) => {
-      await mutate(
+    withdraw: (campaignId) =>
+      mutate(
         campaignId,
         () => withdrawBuildingHandIn({ path: { campaign_id: campaignId }, throwOnError: true }),
         'Could not withdraw the hand-in'
-      );
-    },
-
-    markDraft: (campaignId, taskId) =>
-      mutate(
-        campaignId,
-        () =>
-          markSceneDraft({
-            path: { campaign_id: campaignId, task_id: taskId },
-            throwOnError: true,
-          }),
-        'Could not mark the scene as a draft'
       ),
   };
 });

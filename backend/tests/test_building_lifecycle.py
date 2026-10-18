@@ -223,11 +223,11 @@ def test_buildings_and_authoritative_submissions_are_not_outcomes(counts, bad):
 @pytest.mark.parametrize(
     ("outcome", "buildings", "state"),
     [
-        ((True, 2), 1, "complete"),
-        ((True, 3), 0, "empty"),
-        ((True, None), 3, "skipped"),
-        ((False, None), 2, "draft"),
-        ((False, None), 0, "todo"),
+        (2, 1, "complete"),
+        (3, 0, "empty"),
+        (None, 3, "skipped"),
+        (lifecycle.NO_OUTCOME, 2, "draft"),
+        (lifecycle.NO_OUTCOME, 0, "todo"),
     ],
 )
 def test_scene_states(outcome, buildings, state):

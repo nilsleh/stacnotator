@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import type { AnnotationTaskOut } from '~/api/client';
+import type { AnnotationTaskOut, BuildingScenes } from '~/api/client';
 import { ALL_TASK_STATUSES, applyTaskFilter, type TaskFilter } from '../campaign/tasks';
 import { campaignState, useCampaignStore } from './campaign';
-import { isSceneTask } from './sceneDrawing';
+import { buildingScenesOf } from './sceneDrawing';
 import { currentTask, useTasksStore } from './tasks';
 
 /** A scene, from the current annotator's point of view. Skipping is not done:
@@ -11,10 +11,27 @@ export type SceneStatus = 'todo' | 'skipped' | 'done';
 
 type SceneTaskLike = Pick<AnnotationTaskOut, 'annotations'>;
 
+/** The user's own task annotation, which is a scene's outcome. */
+export const myAnnotation = (task: SceneTaskLike, userId: string | null) =>
+  task.annotations.find((a) => a.created_by_user_id === userId);
+
 export function sceneStatus(task: SceneTaskLike, userId: string | null): SceneStatus {
-  const mine = task.annotations.find((a) => a.created_by_user_id === userId);
+  const mine = myAnnotation(task, userId);
   if (!mine) return 'todo';
   return mine.label_id == null ? 'skipped' : 'done';
+}
+
+/** The outcome the user gave a scene, or null while it has none. */
+export function sceneOutcome(
+  task: SceneTaskLike,
+  userId: string | null,
+  config: BuildingScenes
+): 'complete' | 'empty' | 'skipped' | null {
+  const mine = myAnnotation(task, userId);
+  if (!mine) return null;
+  if (mine.label_id === config.complete_label_id) return 'complete';
+  if (mine.label_id === config.empty_label_id) return 'empty';
+  return mine.label_id == null ? 'skipped' : null;
 }
 
 export interface SceneProgress {
@@ -93,7 +110,7 @@ export const useSceneNavStore = create<SceneNavState>((set) => ({
 
 /** True when the current task is a scene, so navigation goes through here. */
 export function onSceneTask(): boolean {
-  return isSceneTask(currentTask(), useCampaignStore.getState().campaign);
+  return currentTask() !== null && buildingScenesOf(useCampaignStore.getState().campaign) !== null;
 }
 
 /** Widen the visible list to every status, keeping the current scene current. */

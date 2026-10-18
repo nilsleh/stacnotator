@@ -23,7 +23,7 @@ import { campaignState, formFields, useCampaignStore } from './stores/campaign';
 import { currentTask, useTasksStore } from './stores/tasks';
 import { onSceneTask, stepScene } from './stores/sceneNav';
 import { buildingScenesOf, unsavedBuildings } from './stores/sceneDrawing';
-import { noteOutcomeWritten, useBuildingProgressStore } from './stores/buildingProgress';
+import { noteOutcomeWritten } from './stores/buildingProgress';
 import { usePrefsStore } from './stores/prefs';
 import { forgetTaskActiveMs, readTaskActiveMs } from './taskTiming';
 import { useWorkStore } from './stores/work';
@@ -127,6 +127,31 @@ export interface SubmitParams {
   isSkip?: boolean;
 }
 
+/** Delete the user's own annotation on a task and patch the task to match. */
+async function removeMine(
+  task: AnnotationTaskOut,
+  currentUserId: string,
+  annotationId: number
+): Promise<SubmitOutcome> {
+  try {
+    const { data } = await deleteAnnotation({
+      path: { campaign_id: campaignState().campaign.id, annotation_id: annotationId },
+      throwOnError: true,
+    });
+    return {
+      kind: 'removed',
+      task: {
+        ...task,
+        annotations: task.annotations.filter((a) => a.id !== annotationId),
+        assignments: withAssignmentStatus(task, currentUserId, data?.assignment_status),
+        task_status: toTaskStatus(data?.task_status) ?? 'pending',
+      },
+    };
+  } catch (error) {
+    return { kind: 'error', message: extractErrorMessage(error) };
+  }
+}
+
 export async function submitCurrent(params: SubmitParams): Promise<SubmitOutcome> {
   const campaignId = campaignState().campaign.id;
   const { task, currentUserId, labelId, comment } = params;
@@ -144,22 +169,7 @@ export async function submitCurrent(params: SubmitParams): Promise<SubmitOutcome
   // "Take my label off this task": nothing chosen, one already there, and no
   // comment being added.
   if (!params.isSkip && labelId === null && mine?.label_id != null && !comment) {
-    try {
-      const { data } = await deleteAnnotation({
-        path: { campaign_id: campaignId, annotation_id: mine.id },
-      });
-      return {
-        kind: 'removed',
-        task: {
-          ...task,
-          annotations: task.annotations.filter((a) => a.id !== mine.id),
-          assignments: withAssignmentStatus(task, currentUserId, data?.assignment_status),
-          task_status: toTaskStatus(data?.task_status) ?? 'pending',
-        },
-      };
-    } catch (error) {
-      return { kind: 'error', message: extractErrorMessage(error) };
-    }
+    return removeMine(task, currentUserId, mine.id);
   }
 
   if (params.knnValidationEnabled && labelId !== null && !params.confirmMismatch) {
@@ -432,20 +442,15 @@ export async function finishScene(outcome: SceneOutcome): Promise<void> {
 /** Take the outcome off the current scene, leaving its buildings as a draft. */
 export async function markCurrentSceneDraft(): Promise<void> {
   const task = currentTask();
-  const { campaign, currentUserId } = useCampaignStore.getState();
-  if (!task || !campaign || !currentUserId) return;
+  const { currentUserId } = useCampaignStore.getState();
+  const mine = task?.annotations.find((a) => a.created_by_user_id === currentUserId);
+  if (!task || !currentUserId || !mine) return;
   await guarded(async () => {
-    const ok = await useBuildingProgressStore.getState().markDraft(campaign.id, task.id);
-    if (!ok) return;
-    noteOutcomeWritten(task.id);
-    useTasksStore.getState().replaceTask(
-      {
-        ...task,
-        annotations: task.annotations.filter((a) => a.created_by_user_id !== currentUserId),
-        assignments: withAssignmentStatus(task, currentUserId, 'pending'),
-        task_status: 'pending',
-      },
-      campaignState().catalog
-    );
+    const outcome = await removeMine(task, currentUserId, mine.id);
+    if (outcome.kind === 'error') alert(outcome.message, 'error');
+    else if (outcome.kind === 'removed') {
+      noteOutcomeWritten(task.id);
+      useTasksStore.getState().replaceTask(outcome.task, campaignState().catalog);
+    }
   });
 }

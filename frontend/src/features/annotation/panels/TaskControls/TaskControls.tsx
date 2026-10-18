@@ -21,7 +21,7 @@ import { LabelGrid } from './LabelGrid';
 import { ReviewList } from './ReviewList';
 import { SceneShapes } from './SceneShapes';
 import { SceneProgressPanel } from './SceneProgress';
-import { buildingScenesOf, isSceneTask } from '../../stores/sceneDrawing';
+import { buildingScenesOf } from '../../stores/sceneDrawing';
 import { SceneActions } from './SceneActions';
 import { currentTask, useTasksStore } from '../../stores/tasks';
 import { useClaims } from './useClaims';
@@ -33,11 +33,8 @@ function loadTaskIntoForm(task: AnnotationTaskOut | null, currentUserId: string 
   const mine = task?.annotations.find((a) => a.created_by_user_id === currentUserId) ?? null;
   // A scene's outcome is not a label to pick: what is selected is the building
   // label, so the draw tool stays armed from scene to scene.
-  const campaign = useCampaignStore.getState().campaign;
-  const config = buildingScenesOf(campaign);
-  work.setSelectedLabelId(
-    config && isSceneTask(task, campaign) ? config.building_label_id : (mine?.label_id ?? null)
-  );
+  const config = buildingScenesOf(useCampaignStore.getState().campaign);
+  work.setSelectedLabelId(config && task ? config.building_label_id : (mine?.label_id ?? null));
   work.setComment(mine?.comment ?? '');
   work.setConfidence(mine?.confidence ?? DEFAULT_CONFIDENCE);
   work.setFlagged(mine?.flagged_for_review ?? false);
@@ -134,7 +131,7 @@ export function TaskControls() {
   const userAnnotation = task.annotations.find((a) => a.created_by_user_id === currentUserId);
   // A scene is finished by its own actions and handed in as a whole, never
   // labelled or settled per task by authority.
-  const sceneTask = isSceneTask(task, campaign);
+  const sceneTask = buildingScenesOf(campaign) !== null;
   const hasExistingLabel = userAnnotation?.label_id != null;
   const { mayLabel, countsTowardCompletion, isAssignedToTask } = taskLabellingPolicy(task);
   const taskHasAssignments = (task.assignments?.length ?? 0) > 0;

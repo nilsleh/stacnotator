@@ -1,11 +1,13 @@
 import { useEffect, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { BuildingProgressOut } from '~/api/client';
+import type { AnnotationTaskOut, BuildingProgressOut } from '~/api/client';
+import { chipCls as chip } from '~/shared/ui/pill';
 import { campaignState, useCampaign, useCampaignStore } from '../../stores/campaign';
 import { useBuildingProgressStore, writtenSince } from '../../stores/buildingProgress';
 import { useSceneTaskId } from '../../stores/sceneDrawing';
 import {
   firstRemainingScene,
+  myAnnotation,
   reviewAllScenes,
   sceneProgress,
   sceneScope,
@@ -15,25 +17,15 @@ import {
 import { useTasksStore } from '../../stores/tasks';
 import { useWorkStore } from '../../stores/work';
 
-const chip = (active: boolean) =>
-  `px-2 py-1 rounded text-[11px] font-medium border cursor-pointer whitespace-nowrap ${
-    active
-      ? 'bg-brand-600 text-white border-brand-600'
-      : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50'
-  }`;
-
 const actionButton =
   'inline-flex items-center justify-center h-7 px-2.5 text-[11px] font-medium whitespace-nowrap rounded-md border transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
 
 /** The user's outcomes across the task list, as a string that only changes
  *  when one of them does. */
-const outcomeKey = (
-  tasks: { id: number; annotations: { created_by_user_id: string; label_id?: number | null }[] }[],
-  userId: string | null
-) =>
+const outcomeKey = (tasks: AnnotationTaskOut[], userId: string | null) =>
   tasks
     .map((t) => {
-      const mine = t.annotations.find((a) => a.created_by_user_id === userId);
+      const mine = myAnnotation(t, userId);
       return mine ? `${t.id}:${mine.label_id ?? '-'}` : '';
     })
     .join(',');
@@ -53,7 +45,7 @@ function dropReopenedOutcomes(progress: BuildingProgressOut, requestedAt: number
       (t) =>
         open.has(t.id) &&
         !writtenSince(t.id, requestedAt) &&
-        t.annotations.some((a) => a.created_by_user_id === currentUserId)
+        myAnnotation(t, currentUserId) !== undefined
     )
     .map((t) => ({
       ...t,

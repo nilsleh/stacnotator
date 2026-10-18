@@ -156,6 +156,10 @@ def parse_tiler_params(params: str) -> dict:
     return viz
 
 
+def _all_chips(tifs: tuple[str, ...]) -> SliceSpec:
+    return SliceSpec("All chips", "2020-01-01", "2020-12-31", tifs)
+
+
 def plan_sources(dataset: dict) -> list[SourceSpec]:
     """The imagery a dataset is shown with.
 
@@ -170,11 +174,7 @@ def plan_sources(dataset: dict) -> list[SourceSpec]:
             for s in dataset["slices"]
         )
     else:
-        slices = (
-            SliceSpec(
-                "All chips", "2020-01-01", "2020-12-31", tuple(c["tif"] for c in dataset["chips"])
-            ),
-        )
+        slices = (_all_chips(tuple(c["tif"] for c in dataset["chips"])),)
     sources = [
         SourceSpec(
             f"{dataset['dataset_key'].upper()} Primary",
@@ -193,7 +193,7 @@ def plan_sources(dataset: dict) -> list[SourceSpec]:
                 secondary["name"],
                 zoom,
                 parse_tiler_params(secondary["tiler_params"]),
-                (SliceSpec("All chips", "2020-01-01", "2020-12-31", tifs),),
+                (_all_chips(tifs),),
             )
         )
     return sources
@@ -300,7 +300,14 @@ class TilerRegistrar:
         return url
 
     def stamp(self, db: Session, campaign_id: int) -> None:
-        self._stamp(self._tile_urls(db, campaign_id))
+        """Mark the campaign's tile URLs as served by our tiler, as registration does.
+
+        The browser only sends the tiler cookie for tile URLs with a self-hosted
+        ``tile_provider``; without it every chip tile is refused.
+        """
+        for row in self._tile_urls(db, campaign_id):
+            row.tile_provider = self.tiler_name
+            row.mosaic_id = self.searches[row.tile_url]
 
     @staticmethod
     def _tile_urls(db: Session, campaign_id: int) -> list[SliceTileUrl]:
@@ -316,16 +323,6 @@ class TilerRegistrar:
 
     def stored_tile_urls(self, db: Session, campaign_id: int) -> set[str]:
         return {row.tile_url for row in self._tile_urls(db, campaign_id)}
-
-    def _stamp(self, rows: list[SliceTileUrl]) -> None:
-        """Mark the campaign's tile URLs as served by our tiler, as registration does.
-
-        The browser only sends the tiler cookie for tile URLs with a self-hosted
-        ``tile_provider``; without it every chip tile is refused.
-        """
-        for row in rows:
-            row.tile_provider = self.tiler_name
-            row.mosaic_id = self.searches[row.tile_url]
 
 
 def build_editor_state(

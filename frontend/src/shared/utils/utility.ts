@@ -400,8 +400,6 @@ export const orthogonalizePolygonRing = (coords: [number, number][]): [number, n
     const isHorizontal = Math.abs(du) >= Math.abs(dv);
     return {
       axis: isHorizontal ? ('H' as const) : ('V' as const),
-      uMid: 0.5 * (p0.u + p1.u),
-      vMid: 0.5 * (p0.v + p1.v),
     };
   });
 
@@ -409,15 +407,7 @@ export const orthogonalizePolygonRing = (coords: [number, number][]): [number, n
 
   let orthoUV: { u: number; v: number }[];
 
-  if (strictlyAlternating) {
-    orthoUV = rotated.map((_, i) => {
-      const prevEdge = edges[(i - 1 + n) % n];
-      const nextEdge = edges[i];
-      const u = prevEdge.axis === 'V' ? prevEdge.uMid : nextEdge.uMid;
-      const v = prevEdge.axis === 'H' ? prevEdge.vMid : nextEdge.vMid;
-      return { u, v };
-    });
-  } else if (n === 4) {
+  if (n === 4 && !strictlyAlternating) {
     // Oriented minimum bounding rectangle preserving winding & start corner
     const minU = Math.min(...rotated.map((p) => p.u));
     const maxU = Math.max(...rotated.map((p) => p.u));
@@ -451,7 +441,8 @@ export const orthogonalizePolygonRing = (coords: [number, number][]): [number, n
     orthoUV = [0, 1, 2, 3].map((k) => rect[(bestIdx + k) % 4]);
   } else {
     orthoUV = rotated.map((point) => ({ ...point }));
-    // Consecutive same-axis edges must share one coordinate, including at ring closure.
+    // Consecutive same-axis edges must share one coordinate, including at ring closure;
+    // on a strictly alternating ring that is each edge's midpoint.
     for (const axis of ['H', 'V'] as const) {
       const coordinate = axis === 'H' ? 'v' : 'u';
       const visited = new Set<number>();

@@ -229,9 +229,9 @@ How it maps onto `develop` (`backend/src/buildings/`, migration `bb1buildings`):
   the owner's scene by deleting their outcome (tombstoned for the changes poll).
 - Explore shapes in building campaigns are held to the same rules (building label, a
   scene, a score, inside that scene), so a "Near task" shape outside the scene is refused.
-- Routes: `GET .../buildings/progress`, `POST|DELETE .../buildings/hand-in`,
-  `GET .../buildings/scenes/{task}/buildings` (the caller's), and
-  `POST .../buildings/scenes/{task}/draft` (clear the outcome).
+- Routes: `GET .../buildings/progress`, `POST|DELETE .../buildings/hand-in`, and
+  `GET .../buildings/scenes/{task}/buildings` (the caller's). Draft (clear the outcome)
+  deletes the user's task annotation through the regular annotation endpoint.
 - A user's scenes are those assigned to them, or every scene when none are.
 - Hand-in is withdrawn whenever one of the user's scenes stops being Complete or Empty
   (a building edit, Skip, or Draft). This was the proposed default and is kept; nobody

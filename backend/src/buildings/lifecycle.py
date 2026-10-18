@@ -317,19 +317,19 @@ def user_scenes(db: Session, campaign_id: int, user_id: UUID) -> list[Annotation
     )
 
 
-def scene_state(
-    cfg: BuildingScenes, outcome: tuple[bool, int | None], buildings: int
-) -> SceneState:
-    """``outcome`` is (has a task annotation, its label)."""
-    has_outcome, label_id = outcome
-    if has_outcome:
-        if label_id == cfg.complete_label_id:
-            return "complete"
-        if label_id == cfg.empty_label_id:
-            return "empty"
-        if label_id is None:
-            return "skipped"
-    return "draft" if buildings else "todo"
+NO_OUTCOME = object()
+
+
+def scene_state(cfg: BuildingScenes, outcome_label: object, buildings: int) -> SceneState:
+    """``outcome_label`` is the label of the user's task annotation (None for a Skip),
+    or ``NO_OUTCOME`` when there is none."""
+    if outcome_label is NO_OUTCOME:
+        return "draft" if buildings else "todo"
+    if outcome_label == cfg.complete_label_id:
+        return "complete"
+    if outcome_label == cfg.empty_label_id:
+        return "empty"
+    return "skipped"
 
 
 def scene_summaries(
@@ -337,25 +337,30 @@ def scene_summaries(
 ) -> list[SceneSummary]:
     scenes = user_scenes(db, campaign.id, user_id)
     ids = [s.id for s in scenes]
-    outcomes: dict[int, tuple[bool, int | None]] = {}
+    outcomes: dict[int, int | None] = {}
     if ids:
-        for task_id, label_id in db.execute(
-            select(Annotation.annotation_task_id, Annotation.label_id).where(
-                Annotation.annotation_task_id.in_(ids), Annotation.created_by_user_id == user_id
-            )
-        ).all():
-            outcomes[task_id] = (True, label_id)
-    counts = _building_counts(db, user_id, ids)
-    return [
-        SceneSummary(
-            task_id=s.id,
-            annotation_number=s.annotation_number,
-            state=scene_state(cfg, outcomes.get(s.id, (False, None)), counts.get(s.id, (0, 0))[0]),
-            buildings=counts.get(s.id, (0, 0))[0],
-            unscored=counts.get(s.id, (0, 0))[1],
+        outcomes = dict(
+            db.execute(
+                select(Annotation.annotation_task_id, Annotation.label_id).where(
+                    Annotation.annotation_task_id.in_(ids),
+                    Annotation.created_by_user_id == user_id,
+                )
+            ).all()
         )
-        for s in scenes
-    ]
+    counts = _building_counts(db, user_id, ids)
+    summaries = []
+    for s in scenes:
+        buildings, unscored = counts.get(s.id, (0, 0))
+        summaries.append(
+            SceneSummary(
+                task_id=s.id,
+                annotation_number=s.annotation_number,
+                state=scene_state(cfg, outcomes.get(s.id, NO_OUTCOME), buildings),
+                buildings=buildings,
+                unscored=unscored,
+            )
+        )
+    return summaries
 
 
 def hand_in_blockers(summaries: list[SceneSummary]) -> list[SceneSummary]:

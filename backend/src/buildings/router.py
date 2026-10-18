@@ -64,18 +64,3 @@ def get_scene_buildings(
 ) -> list[Annotation]:
     """The caller's buildings in one scene, oldest first."""
     return lifecycle.scene_buildings(db, campaign, task_id, user.id)
-
-
-@router.post(
-    "/campaigns/{campaign_id}/buildings/scenes/{task_id}/draft",
-    response_model=BuildingProgressOut,
-)
-def mark_scene_draft(
-    campaign_id: int,
-    task_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_authenticated_user),
-    campaign: Campaign = Depends(require_campaign_access),
-) -> BuildingProgressOut:
-    """Clear the caller's outcome on a scene so it is a draft again."""
-    return service.mark_draft(db, campaign, task_id, user.id)

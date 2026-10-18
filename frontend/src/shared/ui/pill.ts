@@ -7,3 +7,11 @@ export const pillCls = (active: boolean, extra = '') =>
       ? 'bg-brand-600 text-white border-brand-600'
       : 'bg-white text-neutral-700 border-neutral-200 hover:border-neutral-300'
   } ${extra}`.trim();
+
+/** The compact toggle used inside dense panels (the task panel's scene tools). */
+export const chipCls = (active: boolean) =>
+  `px-2 py-1 rounded text-[11px] font-medium border cursor-pointer whitespace-nowrap ${
+    active
+      ? 'bg-brand-600 text-white border-brand-600'
+      : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50'
+  }`;

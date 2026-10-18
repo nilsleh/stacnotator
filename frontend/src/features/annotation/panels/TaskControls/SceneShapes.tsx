@@ -1,19 +1,13 @@
 import { deleteAnnotation, updateAnnotationOpenmode, type AnnotationOut } from '~/api/client';
 import { wktToGeometry } from '../../campaign/annotation';
 import { handleError } from '~/shared/utils/errorHandler';
+import { chipCls as chip } from '~/shared/ui/pill';
 import { useCampaign, useLabels } from '../../stores/campaign';
 import { buildingScenesOf, useSceneStore, useSceneTaskId } from '../../stores/sceneDrawing';
 import { useWorkStore, type Tool } from '../../stores/work';
 import { onSceneShapeSaved } from '../../drawing';
 
 const CONFIDENCE_LEVELS = [1, 2, 3, 4, 5];
-
-const chip = (active: boolean) =>
-  `px-2 py-1 rounded text-[11px] font-medium border cursor-pointer ${
-    active
-      ? 'bg-brand-600 text-white border-brand-600'
-      : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50'
-  }`;
 
 /** Draw, list, score and delete the separate buildings of the open scene. */
 export function SceneShapes() {

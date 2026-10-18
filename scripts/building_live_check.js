@@ -5,7 +5,8 @@
 // Use a freshly seeded building campaign whose scenes are untouched, e.g.
 //   python scripts/seed_building_datasets.py --only sn1_rio --reset --confirm-reset DELETE-ANNOTATIONS
 // It draws two buildings (one squared), reloads, re-scores, deletes one, completes the
-// scene, marks the next one empty, then checks the panel, the server and the export.
+// scene, marks the next one empty, checks the panel, the server and the export, then
+// takes the first scene's outcome off again (Draft).
 // Headless Chromium from frontend/node_modules (playwright-core); screenshot in data/.
 const path = require('path');
 const { chromium } = require(path.join(__dirname, '..', 'frontend', 'node_modules', 'playwright-core'));
@@ -68,7 +69,8 @@ async function open(page) {
   check('same scene after reload', await scene(), firstScene);
   check('two buildings after reload', await shapes(), 2);
   const confidences = await page.locator('[data-testid=scene-shape]').evaluateAll((els) => els.map((e) => e.dataset.confidence));
-  check('scores persisted', confidences, ['4', '3']);
+  // Both saves run in the background, so either may get the lower id.
+  check('scores persisted', [...confidences].sort(), ['3', '4']);
 
   // Edit: re-score the second building.
   await page.locator('[data-testid=scene-shape]').nth(1).locator('[data-testid=scene-shape-confidence][data-level="5"]').click();
@@ -108,6 +110,20 @@ async function open(page) {
   const buildings = fc.features.filter((f) => f.properties.stacnotator_origin_task_id != null);
   check('export: one building in the first scene', buildings.map((f) => [String(f.properties.stacnotator_origin_task_id), f.properties.stacnotator_confidence, f.geometry.type]), [[firstScene, 5, 'Polygon']]);
   check('export: no references', fc.features.filter((f) => f.properties.stacnotator_source_id != null).length, 0);
+
+  // Back to the completed scene and take its outcome off: it becomes a draft again.
+  await page.getByTestId('scene-cycle-all').click();
+  for (let i = 0; i < 10 && (await scene()) !== firstScene; i++) {
+    await page.keyboard.press('w');
+    await page.waitForTimeout(400);
+  }
+  await page.getByTestId('scene-draft').click();
+  for (let i = 0; i < 30 && (await page.getByTestId('scene-outcome').textContent()) !== 'Draft'; i++) {
+    await page.waitForTimeout(200);
+  }
+  check('draft clears the outcome', await page.getByTestId('scene-outcome').textContent(), 'Draft');
+  const afterDraft = await api(`/campaigns/${CID}/buildings/progress`);
+  check('server sees the draft', afterDraft.scenes.find((s) => String(s.task_id) === firstScene)?.state, 'draft');
   check('no page errors', errors, []);
   console.log(`${checks.filter(Boolean).length}/${checks.length} passed`);
   await browser.close();

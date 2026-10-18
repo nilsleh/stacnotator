@@ -45,7 +45,8 @@ Migration: `bb1buildings` (after `at1mapaccess`).
   - `GET .../buildings/progress`.
   - `POST|DELETE .../buildings/hand-in`.
   - `GET .../buildings/scenes/{task}/buildings` (the caller's).
-  - `POST .../buildings/scenes/{task}/draft`.
+  - Draft (clearing a scene's outcome) has no route of its own: the client deletes its
+    task annotation through `DELETE .../annotations/{id}`, whose hooks withdraw the hand-in.
 - `seeding.py`: the curated seeder (section below).
 - Changes in `develop`'s own modules:
   - `annotation/service.py`: hooks only.

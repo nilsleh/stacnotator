@@ -1,6 +1,7 @@
 import type { AnnotationTaskOut } from '~/api/client';
 import { useCampaign, useCampaignStore } from '../../stores/campaign';
-import { buildingScenesOf, useSceneStore } from '../../stores/sceneDrawing';
+import { buildingScenesOf, unsavedIn, useSceneStore } from '../../stores/sceneDrawing';
+import { sceneOutcome } from '../../stores/sceneNav';
 import { useTasksStore } from '../../stores/tasks';
 import {
   finishScene,
@@ -9,18 +10,12 @@ import {
   taskLabellingPolicy,
 } from '../../taskActions';
 
-type Outcome = 'complete' | 'empty' | 'skipped' | null;
-
 const button =
   'inline-flex items-center justify-center h-8 px-3 text-xs font-medium rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap';
 const primary = `${button} bg-brand-600 text-white hover:bg-brand-700 shadow-sm disabled:bg-neutral-300 disabled:text-neutral-500 disabled:shadow-none`;
 const secondary = `${button} text-neutral-700 bg-white border border-neutral-300 shadow-sm hover:bg-neutral-50`;
 
-const OUTCOME_TEXT: Record<Exclude<Outcome, null>, string> = {
-  complete: 'Complete',
-  empty: 'Empty',
-  skipped: 'Skipped',
-};
+const OUTCOME_TEXT = { complete: 'Complete', empty: 'Empty', skipped: 'Skipped' } as const;
 
 /**
  * How a scene is finished, in place of the label/confidence/submit block:
@@ -34,26 +29,12 @@ export function SceneActions({ task }: { task: AnnotationTaskOut }) {
   const isSubmitting = useTasksStore((s) => s.isSubmitting);
   const loadedFor = useSceneStore((s) => s.taskId);
   const rows = useSceneStore((s) => s.annotations);
-  const outbox = useSceneStore((s) => s.outbox);
-  const pending = useSceneStore((s) => s.pending);
+  const inFlight = useSceneStore((s) => unsavedIn(s, task.id));
   if (!config) return null;
 
-  const mine = task.annotations.find((a) => a.created_by_user_id === currentUserId);
-  const outcome: Outcome = !mine
-    ? null
-    : mine.label_id === config.complete_label_id
-      ? 'complete'
-      : mine.label_id === config.empty_label_id
-        ? 'empty'
-        : mine.label_id == null
-          ? 'skipped'
-          : null;
-
+  const outcome = sceneOutcome(task, currentUserId, config);
   const saved = loadedFor === task.id ? rows : [];
   const unscored = saved.filter((a) => a.confidence == null).length;
-  const inFlight =
-    outbox.filter((o) => o.taskId === task.id && o.status !== 'saved').length +
-    (pending?.taskId === task.id ? 1 : 0);
   const buildings = saved.length + inFlight;
   const { mayLabel } = taskLabellingPolicy(task);
   const busy = isSubmitting || !mayLabel;

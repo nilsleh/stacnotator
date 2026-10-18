@@ -3,7 +3,6 @@ import {
   createAnnotationOpenmode,
   getSceneBuildings,
   type AnnotationOut,
-  type AnnotationTaskOut,
   type BuildingScenes,
   type CampaignOutFull,
 } from '~/api/client';
@@ -13,37 +12,26 @@ import { geometryToWkt } from '../campaign/annotation';
 import { originTaskId, useCampaignStore } from './campaign';
 import { currentTask, useCurrentTask } from './tasks';
 
-/** The labels of a building campaign, or null for any other campaign. */
+/** The labels of a building campaign, or null for any other campaign. In a
+ *  building campaign every task is a scene: the annotator draws any number of
+ *  separate buildings inside its outline while staying in Tasks mode. Each
+ *  building is its own standalone annotation whose `origin_task_id` is the
+ *  scene's task; the scene's outcome is the user's task annotation. */
 export const buildingScenesOf = (campaign: CampaignOutFull | null): BuildingScenes | null =>
   campaign?.settings.building_scenes ?? null;
-
-/**
- * In a building campaign every task is a scene: the annotator draws any number
- * of separate buildings inside its outline while staying in Tasks mode. Each
- * building is its own standalone annotation whose `origin_task_id` is the
- * scene's task; the scene's outcome is the user's task annotation.
- */
-export function isSceneTask(
-  task: Pick<AnnotationTaskOut, 'id'> | null,
-  campaign: CampaignOutFull | null
-): boolean {
-  return task !== null && buildingScenesOf(campaign) !== null;
-}
 
 /** The scene being drawn in, or null outside Tasks mode or off a scene task. */
 export function sceneTaskId(): number | null {
   const { workMode, campaign } = useCampaignStore.getState();
-  if (workMode !== 'tasks') return null;
   const task = currentTask();
-  return task && isSceneTask(task, campaign) ? task.id : null;
+  return workMode === 'tasks' && task && buildingScenesOf(campaign) ? task.id : null;
 }
 
 export function useSceneTaskId(): number | null {
   const workMode = useCampaignStore((s) => s.workMode);
   const campaign = useCampaignStore((s) => s.campaign);
   const task = useCurrentTask();
-  if (workMode !== 'tasks') return null;
-  return task && isSceneTask(task, campaign) ? task.id : null;
+  return workMode === 'tasks' && task && buildingScenesOf(campaign) ? task.id : null;
 }
 
 /** Sent with every standalone create: the scene in Tasks mode, else the task
@@ -183,8 +171,12 @@ export const useSceneStore = create<SceneState>((set, get) => {
 });
 
 /** Buildings of this scene not yet safely stored: scoring, saving or failed. */
-export function unsavedBuildings(taskId: number): number {
-  const { pending, outbox } = useSceneStore.getState();
-  const queued = outbox.filter((o) => o.taskId === taskId && o.status !== 'saved').length;
-  return queued + (pending?.taskId === taskId ? 1 : 0);
-}
+export const unsavedIn = (
+  { pending, outbox }: Pick<SceneState, 'pending' | 'outbox'>,
+  taskId: number
+): number =>
+  outbox.filter((o) => o.taskId === taskId && o.status !== 'saved').length +
+  (pending?.taskId === taskId ? 1 : 0);
+
+export const unsavedBuildings = (taskId: number): number =>
+  unsavedIn(useSceneStore.getState(), taskId);
