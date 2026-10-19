@@ -47,7 +47,6 @@ from src.campaigns.task_sets import DEFAULT_TASK_SET_NAME
 from src.config import TilerCfg, get_settings
 from src.imagery.models import ImageryCollection, ImagerySlice, ImagerySource, SliceTileUrl
 from src.imagery.schemas import (
-    BasemapCreate,
     ImageryCollectionCreate,
     ImageryEditorStateCreate,
     ImagerySliceCreate,
@@ -84,11 +83,6 @@ REGISTER_WORKERS = 4
 # search over several chips names those item ids.
 TILER_COG_COLLECTION = "custom-maps"
 TILER_COG_ASSET = "data"
-BASEMAP = BasemapCreate(
-    name="CartoDB Positron",
-    url="https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-    max_native_zoom=19,
-)
 WGS84 = CRS.from_epsg(4326)
 
 
@@ -135,9 +129,12 @@ def tiler_cog_item_id(cog_url: str) -> str:
 
 
 def parse_tiler_params(params: str) -> dict:
-    """``bidx=5&bidx=3&bidx=2&rescale=0,1200`` -> viz params for ``build_tile_url``."""
+    """``bidx=5&bidx=3&bidx=2&rescale=0,1200`` -> viz params for ``build_tile_url``.
+
+    One ``rescale`` stretches every band alike; one per ``bidx`` stretches each band apart.
+    """
     bidx: list[int] = []
-    rescale: str | None = None
+    rescales: list[str] = []
     for key, value in parse_qsl(params, strict_parsing=True):
         if key == "bidx":
             bidx.append(int(value))
@@ -145,14 +142,16 @@ def parse_tiler_params(params: str) -> dict:
             lo, hi = (float(v) for v in value.split(","))
             if hi <= lo:
                 raise ValueError(f"rescale must be low,high: {value!r}")
-            rescale = value
+            rescales.append(value)
         else:
             raise ValueError(f"unsupported tiler param {key!r}")
+    if len(rescales) > 1 and len(rescales) != len(bidx):
+        raise ValueError(f"{len(rescales)} rescales for {len(bidx)} bands: {params!r}")
     viz: dict = {"assets": [TILER_COG_ASSET]}
     if bidx:
         viz["bidx"] = bidx
-    if rescale:
-        viz["rescale"] = rescale
+    if rescales:
+        viz["rescale"] = rescales[0] if len(rescales) == 1 else rescales
     return viz
 
 
@@ -245,24 +244,20 @@ def _polygonal(geom) -> Polygon | MultiPolygon | None:
     return parts[0] if len(parts) == 1 else MultiPolygon(parts)
 
 
-def plan_scenes(dataset: dict, geojsons: dict[str, dict], cog_dir: str) -> list[SceneSpec]:
-    """One scene per chip: the chip's bbox is the cell, its footprints the references."""
+def plan_scenes(dataset: dict, geojsons: dict[str, dict]) -> list[SceneSpec]:
+    """One scene per chip: the chip's bbox is the cell, its footprints the references.
+
+    A task's ``raw_source_data`` reaches every member through the predictions export, so it
+    carries the split and nothing that hints at the answer: no chip id or file name (both
+    findable in the public dataset), no reference count, no empty-scene flag.
+    """
     scenes = []
     for chip in dataset["chips"]:
         cell = box(*chip["bbox"])
         references = normalize_references(geojsons[chip["geojson"]], cell)
-        raw = {
-            "chip_id": chip["chip_id"],
-            "dataset_key": dataset["dataset_key"],
-            "subset": dataset["key"],
-            "split": chip.get("split"),
-            "cog_href": f"{cog_dir}/{chip['tif']}",
-            "reference_buildings": len(references),
-        }
+        raw = {"split": chip.get("split")}
         if chip.get("slice_id"):
             raw["slice_id"] = chip["slice_id"]
-        if not references:
-            raw["is_empty_reference"] = True
         scenes.append(SceneSpec(chip["chip_id"], cell, raw, references))
     return scenes
 
@@ -358,7 +353,8 @@ def build_editor_state(
             )
             for src in sources
         ],
-        basemaps=[BASEMAP],
+        # No basemap: street maps draw building footprints, i.e. the answer.
+        basemaps=[],
     )
 
 
@@ -527,7 +523,7 @@ def seed(
     if only is not None and len(datasets) != len(only):
         raise ValueError(f"Unknown dataset(s): {sorted(only - {d['key'] for d in datasets})}")
     # Validate every dataset before touching the database or the tiler.
-    planned = [(d, plan_scenes(d, payload["geojsons"], cog_dir), plan_sources(d)) for d in datasets]
+    planned = [(d, plan_scenes(d, payload["geojsons"]), plan_sources(d)) for d in datasets]
 
     results = []
     for dataset, scenes, sources in planned:

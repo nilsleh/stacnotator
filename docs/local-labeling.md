@@ -39,16 +39,24 @@ package feeds when images are first built.
 `seed` runs `python scripts/seed_building_datasets.py`, which:
 
 - checks the curated files;
-- copies the chips to `cogs/curated/`, which the tiler sees as `/data/cogs/curated/`;
+- copies the chips to `cogs/curated/`, which the tiler sees as `/data/cogs/curated/`, each
+  under a content-hash name, so the public dataset's file names never reach the tiler or
+  the app;
 - runs `src/buildings/seeding.py` in the backend container.
 
 Each campaign gets:
 
-- one scene per chip;
+- one scene per chip, whose task data holds only its split: no chip id, file name,
+  reference count or empty flag, since every member can export it;
 - the chips as imagery: one time slice per off-nadir angle or month where the dataset has
   them, otherwise one mosaic of all chips;
 - a second source for Khartoum's multispectral chips;
+- no basemap, since street maps draw building footprints; for the same reason the minimap
+  of a building campaign stops at zoom 12;
 - the reference footprints, imported as standalone annotations with a `source_id`.
+
+Campaign names are visible to annotators and agents, so they name the place and sensor,
+never what the scenes hold (no "+ empty tile").
 
 Seeding again reuses campaigns by name and changes nothing. Recreating them deletes their
 annotations, so it needs an explicit confirmation:
@@ -59,6 +67,23 @@ python scripts/seed_building_datasets.py --only sn1_rio --reset --confirm-reset 
 
 The seeder expects the project "Buildings (local)" and the user `local-user` to exist
 (`--project`, `--user`). All scenes are assigned to that user.
+
+### RAMP campaigns
+
+With the RAMP dataset downloaded to `data/datasets/ramp/` (`scripts/download_eval_datasets.py
+ramp`), build a manifest and seed it (`pip install rasterio` once on the host):
+
+```powershell
+python scripts/build_ramp_manifest.py                       # cities etc. from scripts/ramp_campaigns.json
+python scripts/build_ramp_manifest.py --cities accra_ghana nairobi_kenya --scenes-per-city 50
+python scripts/seed_building_datasets.py --manifest data/datasets/ramp/stacnotator_manifest.json
+```
+
+One campaign per city ("RAMP - Accra, Ghana"), one scene per RAMP chip (256 x 256 px at
+about 30 cm). `scripts/ramp_campaigns.json` sets the cities, `scenes_per_city`, the share
+of empty chips (`empty_fraction`), the split shares and the seed; the rest of the sample is
+spread evenly over sparse, medium and dense chips, and the same config always picks the
+same chips. 16-bit cities (Shanghai) get one contrast stretch per band.
 
 ## 3. Labeling a scene
 
@@ -94,7 +119,8 @@ Explore mode shows every building, but adds no buildings to a scene.
 
 The reference footprints are held out: you are scored against them, so no map, list or
 poll shows them. Campaign admins can tick **Show reference footprints (admins)** under
-Display in Explore to draw them as a dashed, read-only layer.
+Display in Explore to draw them as a dashed, read-only layer. For agent runs that are
+scored, see [Evaluation runs](agentic-labelling.md#evaluation-runs-stacnotator-tools-only).
 
 The canvas layout is `develop`'s; resize panels with **Edit Layout**.
 

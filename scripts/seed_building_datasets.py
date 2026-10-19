@@ -1,17 +1,22 @@
-"""Seed the local building campaigns from the curated datasets in data/imagery.
+"""Seed the local building campaigns from a curated manifest.
 
 Checks the curated files, copies the chips into the tiler's COG directory
 (cogs/curated, mounted at /data/cogs/curated), then runs the backend's seeder inside the
-backend container. Existing campaigns are reused unchanged; --reset recreates them and
-deletes their annotations, so it needs --confirm-reset DELETE-ANNOTATIONS.
+backend container. Chips are copied under a content-hash name, so neither the public
+dataset's file names nor its folder layout reach the tiler or the app. Existing
+campaigns are reused unchanged; --reset recreates them and deletes their annotations, so
+it needs --confirm-reset DELETE-ANNOTATIONS.
 
     python scripts/seed_building_datasets.py                  # all datasets
     python scripts/seed_building_datasets.py --only sn1_rio   # one dataset
+    python scripts/seed_building_datasets.py --manifest data/datasets/ramp/stacnotator_manifest.json
     python scripts/seed_building_datasets.py --verify-only    # check files, change nothing
     python scripts/seed_building_datasets.py --refresh-imagery  # re-register chips on the tiler
 """
 
 import argparse
+import copy
+import hashlib
 import json
 import os
 import pathlib
@@ -21,9 +26,8 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "data" / "imagery"
+MANIFEST = ROOT / "data" / "imagery" / "curated_subsets_manifest.json"
 COG_DIR = ROOT / "cogs" / "curated"
-MANIFEST = "curated_subsets_manifest.json"
 CONTAINER = "backend-dev"
 CONTAINER_PAYLOAD = "/tmp/building_seed.json"
 
@@ -44,26 +48,49 @@ def check_files(datasets: list[dict], data_dir: pathlib.Path) -> list[str]:
     return missing
 
 
-def sync_cogs(datasets: list[dict], data_dir: pathlib.Path, cog_dir: pathlib.Path) -> int:
+def cog_names(datasets: list[dict], data_dir: pathlib.Path) -> dict[str, str]:
+    names = {}
+    for rel in sorted(set().union(*(tifs_of(d) for d in datasets))):
+        digest = hashlib.sha256((data_dir / rel).read_bytes()).hexdigest()[:24]
+        names[rel] = f"{digest}.tif"
+    return names
+
+
+def sync_cogs(
+    names: dict[str, str], data_dir: pathlib.Path, cog_dir: pathlib.Path
+) -> int:
     copied = 0
-    for d in datasets:
-        for rel in sorted(tifs_of(d)):
-            src, dst = data_dir / rel, cog_dir / rel
-            if dst.is_file() and dst.stat().st_size == src.stat().st_size:
-                continue
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            copied += 1
+    cog_dir.mkdir(parents=True, exist_ok=True)
+    for rel, name in names.items():
+        src, dst = data_dir / rel, cog_dir / name
+        if dst.is_file() and dst.stat().st_size == src.stat().st_size:
+            continue
+        shutil.copy2(src, dst)
+        copied += 1
     return copied
 
 
-def build_payload(datasets: list[dict], data_dir: pathlib.Path) -> dict:
+def with_cog_names(datasets: list[dict], names: dict[str, str]) -> list[dict]:
+    renamed = copy.deepcopy(datasets)
+    for d in renamed:
+        for chip in d["chips"]:
+            chip["tif"] = names[chip["tif"]]
+            if chip.get("secondary_tif"):
+                chip["secondary_tif"] = names[chip["secondary_tif"]]
+        for s in d.get("slices", []):
+            s["tif"] = names[s["tif"]]
+    return renamed
+
+
+def build_payload(
+    datasets: list[dict], data_dir: pathlib.Path, names: dict[str, str]
+) -> dict:
     geojsons = {
         c["geojson"]: json.loads((data_dir / c["geojson"]).read_text(encoding="utf-8"))
         for d in datasets
         for c in d["chips"]
     }
-    return {"datasets": datasets, "geojsons": geojsons}
+    return {"datasets": with_cog_names(datasets, names), "geojsons": geojsons}
 
 
 def run(cmd: list[str]) -> None:
@@ -72,11 +99,23 @@ def run(cmd: list[str]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--manifest",
+        type=pathlib.Path,
+        default=MANIFEST,
+        help="Curated manifest; chip paths are relative to its folder",
+    )
     parser.add_argument("--only", nargs="+", help="Dataset keys (default: all)")
     parser.add_argument("--project", default="Buildings (local)", help="Project name")
-    parser.add_argument("--user", default="local-user", help="Owner/assignee external uid")
-    parser.add_argument("--reset", action="store_true", help="Recreate existing campaigns")
-    parser.add_argument("--confirm-reset", help="Required with --reset: DELETE-ANNOTATIONS")
+    parser.add_argument(
+        "--user", default="local-user", help="Owner/assignee external uid"
+    )
+    parser.add_argument(
+        "--reset", action="store_true", help="Recreate existing campaigns"
+    )
+    parser.add_argument(
+        "--confirm-reset", help="Required with --reset: DELETE-ANNOTATIONS"
+    )
     parser.add_argument("--verify-only", action="store_true", help="Check files only")
     parser.add_argument(
         "--refresh-imagery",
@@ -86,7 +125,8 @@ def main() -> int:
     parser.add_argument("--container", default=CONTAINER, help="Backend container name")
     args = parser.parse_args()
 
-    manifest = json.loads((DATA_DIR / MANIFEST).read_text(encoding="utf-8"))
+    data_dir = args.manifest.resolve().parent
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     datasets = manifest["campaigns"]
     if args.only:
         unknown = set(args.only) - {d["key"] for d in datasets}
@@ -95,21 +135,24 @@ def main() -> int:
             return 2
         datasets = [d for d in datasets if d["key"] in args.only]
 
-    missing = check_files(datasets, DATA_DIR)
+    missing = check_files(datasets, data_dir)
     if missing:
-        print("error: missing curated files:\n  " + "\n  ".join(missing), file=sys.stderr)
+        print(
+            "error: missing curated files:\n  " + "\n  ".join(missing), file=sys.stderr
+        )
         return 1
     print(f"{len(datasets)} dataset(s), all files present", flush=True)
     if args.verify_only:
         return 0
 
-    copied = sync_cogs(datasets, DATA_DIR, COG_DIR)
+    names = cog_names(datasets, data_dir)
+    copied = sync_cogs(names, data_dir, COG_DIR)
     print(f"cogs/curated: {copied} file(s) copied", flush=True)
 
     fd, tmp = tempfile.mkstemp(suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(build_payload(datasets, DATA_DIR), fh)
+            json.dump(build_payload(datasets, data_dir, names), fh)
         run(["docker", "cp", tmp, f"{args.container}:{CONTAINER_PAYLOAD}"])
         cmd = [
             "docker",
@@ -135,7 +178,9 @@ def main() -> int:
         if args.refresh_imagery:
             cmd.append("--refresh-imagery")
         result = subprocess.run(cmd)
-        subprocess.run(["docker", "exec", args.container, "rm", "-f", CONTAINER_PAYLOAD])
+        subprocess.run(
+            ["docker", "exec", args.container, "rm", "-f", CONTAINER_PAYLOAD]
+        )
         return result.returncode
     finally:
         os.unlink(tmp)

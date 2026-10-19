@@ -65,7 +65,25 @@ def test_tiler_params_become_band_and_stretch_viz_params():
     }
 
 
-@pytest.mark.parametrize("params", ["bidx=1&colormap_name=viridis", "rescale=5,1", "bidx=x"])
+def test_one_rescale_per_band_reaches_the_tile_url():
+    from src.tilers.providers import build_viz_query_string
+
+    viz = seeding.parse_tiler_params(
+        "bidx=1&bidx=2&bidx=3&rescale=0,490&rescale=0,640&rescale=0,500"
+    )
+    assert viz["rescale"] == ["0,490", "0,640", "0,500"]
+    query = build_viz_query_string(viz)
+    assert [p for p in query.split("&") if p.startswith("rescale")] == [
+        "rescale=0%2C490",
+        "rescale=0%2C640",
+        "rescale=0%2C500",
+    ]
+
+
+@pytest.mark.parametrize(
+    "params",
+    ["bidx=1&colormap_name=viridis", "rescale=5,1", "bidx=x", "bidx=1&rescale=0,1&rescale=0,2"],
+)
 def test_unsupported_or_malformed_tiler_params_are_refused(params):
     with pytest.raises(ValueError):
         seeding.parse_tiler_params(params)
@@ -137,19 +155,12 @@ def test_projected_references_are_reprojected():
     assert ref.bounds[1] == pytest.approx(20.005, abs=1e-6)
 
 
-def test_scenes_carry_their_chip_markers_and_flag_empty_references():
+def test_scenes_carry_only_their_split():
     geojsons = {"t/a.geojson": _fc(_square(10.002, 20.002, 0.001)), "t/b.geojson": _fc()}
-    a, b = seeding.plan_scenes(_dataset(), geojsons, "/data/cogs/curated")
-    assert a.raw_source_data == {
-        "chip_id": "a",
-        "dataset_key": "spacenet9",
-        "subset": "sn_test",
-        "split": "val",
-        "cog_href": "/data/cogs/curated/t/a.tif",
-        "reference_buildings": 1,
-    }
-    assert b.raw_source_data["is_empty_reference"] is True
-    assert b.raw_source_data["reference_buildings"] == 0
+    a, b = seeding.plan_scenes(_dataset(), geojsons)
+    # Readable by every member through the predictions export: nothing about the answer.
+    assert a.raw_source_data == b.raw_source_data == {"split": "val"}
+    assert (len(a.references), len(b.references)) == (1, 0)
     assert a.cell.bounds == (10.0, 20.0, 10.01, 20.01)
 
 

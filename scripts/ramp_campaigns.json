@@ -1,0 +1,7 @@
+{
+  "seed": 42,
+  "scenes_per_city": 100,
+  "empty_fraction": 0.1,
+  "splits": { "val": 0.2, "test": 0.8 },
+  "cities": ["accra_ghana", "nairobi_kenya", "shanghai_china"]
+}

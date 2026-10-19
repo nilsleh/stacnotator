@@ -86,10 +86,11 @@ def build_viz_query_string(viz_params: dict | None, for_mpc: bool = False) -> st
     else:
         output_bands = max(len(assets), 1)
 
+    # One "low,high" for every output band, or a list with one per band.
     rescale = viz_params.get("rescale")
     if rescale:
-        for _ in range(output_bands):
-            parts.append(("rescale", rescale))
+        per_band = rescale if isinstance(rescale, list) else [rescale] * output_bands
+        parts.extend(("rescale", r) for r in per_band)
 
     # A colormap maps a single-band image to RGB, so it only applies when the
     # output is exactly one band.

@@ -150,6 +150,21 @@ Tests: `tests/test_building_lifecycle.py`, `tests/test_building_seeding.py`,
   - Hand in and its withdrawal.
 - `local.ps1 backup` / `verify-backup` round trip.
 
+## Ground truth held out from annotators and agents
+
+- Task data holds only the split: chip id, file name, reference count and empty flag are
+  gone, since the predictions export gives task data to every member.
+- Chips reach the tiler under content-hash names, so public file names never appear in
+  tile registrations or the app.
+- Building campaigns get no basemap, and their minimap stops at zoom 12: street maps draw
+  building footprints.
+- Campaign names say place and sensor only (SN1 Rio and SN2 Shanghai were renamed).
+- Agent runs that are scored use the StacNotator MCP tools only
+  (`claude --tools "" --strict-mcp-config ...`, see `agentic-labelling.md`).
+- RAMP: `scripts/build_ramp_manifest.py` builds one campaign per configured city
+  (`scripts/ramp_campaigns.json`), one scene per chip, sampled by building density;
+  `seed_building_datasets.py --manifest` seeds it. 16-bit imagery gets per-band rescales.
+
 ## Open points
 
 - A user's scenes are those assigned to them, or every scene when none are; an

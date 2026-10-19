@@ -37,6 +37,7 @@ export function Minimap({
   layers = [],
   jumpOnClick = true,
   pin = null,
+  maxZoom,
 }: {
   camera: Camera;
   /** The camera this reflects, and lands somewhere new on click or drag. */
@@ -50,6 +51,8 @@ export function Minimap({
    *  stops standing for where the main map looks: no rectangle to drag, and the
    *  overview camera is the viewer's alone to pan and zoom. */
   pin?: LonLat | null;
+  /** How far in the overview may zoom. */
+  maxZoom?: number;
 }) {
   const { containerRef, width, height } = useContainerSize();
   const dragFrame = useRef<number | null>(null);
@@ -202,7 +205,7 @@ export function Minimap({
       className={`relative h-full w-full ${previewBounds ? 'cursor-grabbing' : ''}`}
       onPointerDownCapture={pin ? undefined : handlePointerDownCapture}
     >
-      <MapView camera={camera} layers={allLayers} wheelZoom="plain" />
+      <MapView camera={camera} layers={allLayers} wheelZoom="plain" maxZoom={maxZoom} />
     </div>
   );
 }

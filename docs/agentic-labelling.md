@@ -54,6 +54,32 @@ explains what you are looking at and where to follow progress; closing it does n
 agents, and `watch_agents` reopens it. If you stop a run early, ask it to free the agents'
 tasks, or use the Agents page.
 
+## Evaluation runs: StacNotator tools only
+
+A building campaign seeded from a curated dataset holds that dataset's footprints as hidden
+references (see [local-labeling.md](local-labeling.md)). The app keeps them from agents: an
+agent is a project member, never an admin, and no MCP tool returns references, exports or
+scores. But the MCP server runs on your machine with your sign-in, and the datasets are
+public, so a model that can also run a shell, read files or browse the web could find the
+answers outside StacNotator. For a run you want to score, give the model the StacNotator
+MCP tools and nothing else:
+
+```bash
+mkdir -p ~/stacnotator-eval && cd ~/stacnotator-eval   # outside the repo and data/
+cat > mcp.json <<'EOF'
+{"mcpServers": {"stacnotator": {"command": "uvx", "args": ["--from",
+  "stacnotator-sdk[agent] @ git+https://github.com/RAAPID-ORG/stacnotator#subdirectory=sdk",
+  "stacnotator-mcp"]}}}
+EOF
+claude --tools "" --strict-mcp-config --mcp-config ./mcp.json
+```
+
+`--tools ""` removes every built-in tool (shell, files, web search and fetch, subagents);
+`--strict-mcp-config` loads only the server in `mcp.json`. Without subagents a session runs
+one agent: for several, start one session each. Other clients need the equivalent - no
+built-in tools, this one MCP server. Scores come from the campaign admin's
+`GET /campaigns/{id}/buildings/evaluation?user_id=<agent>`, never from the agent's session.
+
 ## How it works
 
 ```mermaid

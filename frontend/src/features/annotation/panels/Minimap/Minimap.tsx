@@ -11,6 +11,11 @@ import { useWorkStore } from '../../stores/work';
 import { useImageryStore } from '../../stores/imagery';
 import { useMapFocus } from '../../stores/tasks';
 import { mainCamera, minimapCamera } from '../../map/camera';
+import { buildingScenesOf } from '../../stores/sceneDrawing';
+
+/** The overview's street map draws building footprints from zoom 13: in a building
+ *  campaign that is the answer, so the overview stops short of it. */
+const BUILDING_CAMPAIGN_MINIMAP_MAX_ZOOM = 12;
 
 /** Task mode opens the overview on the task at a fixed zoom and then leaves it
  *  alone: what it is about is the pin, not where the main map happens to look,
@@ -152,6 +157,7 @@ const DENSITY_DEBOUNCE_MS = 600;
 export function MinimapBody() {
   const catalog = useCatalog();
   const mode = useCampaignStore((s) => s.workMode);
+  const buildingCampaign = useCampaignStore((s) => buildingScenesOf(s.campaign) !== null);
   const focus = useMapFocus();
   const pin = mode === 'tasks' ? (focus?.center ?? null) : null;
 
@@ -210,6 +216,7 @@ export function MinimapBody() {
       // looking at it - a stray click here used to sail off the task location.
       jumpOnClick={mode === 'explore'}
       pin={pin}
+      maxZoom={buildingCampaign ? BUILDING_CAMPAIGN_MINIMAP_MAX_ZOOM : undefined}
     />
   );
 }
