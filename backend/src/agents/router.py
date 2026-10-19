@@ -4,11 +4,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
 
+from src.agents import buildings as agent_buildings
 from src.agents import service
 from src.agents.schemas import (
     AgentAnnotate,
+    AgentBuildingOut,
+    AgentBuildingsCreate,
+    AgentBuildingsDelete,
     AgentOut,
     AgentRegister,
+    AgentSceneOutcome,
     AgentsOverviewOut,
     AgentUpdate,
     NextTasksOut,
@@ -17,6 +22,7 @@ from src.agents.schemas import (
 from src.annotation.schemas import AnnotationTaskSubmitResponse
 from src.auth.dependencies import require_authenticated_user
 from src.auth.models import User
+from src.buildings.schemas import BuildingProgressOut
 from src.campaigns.dependencies import require_campaign_access
 from src.campaigns.models import Campaign
 from src.database import get_db
@@ -109,3 +115,57 @@ def annotate_agent_task(
     user: User = Depends(require_authenticated_user),
 ) -> AnnotationTaskSubmitResponse:
     return service.submit_annotation(db, agent_id, user, task_id, body)
+
+
+@router.post("/agents/{agent_id}/tasks/{task_id}/buildings", response_model=list[AgentBuildingOut])
+def draw_agent_buildings(
+    agent_id: UUID,
+    task_id: int,
+    body: AgentBuildingsCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
+) -> list[AgentBuildingOut]:
+    """Add buildings to one of the agent's scenes; returns all its buildings there."""
+    agent, campaign, _ = service.get_agent(db, agent_id, user)
+    return agent_buildings.draw(db, agent, campaign, task_id, body)
+
+
+@router.post(
+    "/agents/{agent_id}/tasks/{task_id}/buildings/delete", response_model=list[AgentBuildingOut]
+)
+def delete_agent_buildings(
+    agent_id: UUID,
+    task_id: int,
+    body: AgentBuildingsDelete,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
+) -> list[AgentBuildingOut]:
+    """Delete some of the agent's buildings in a scene; returns the ones left."""
+    agent, campaign, _ = service.get_agent(db, agent_id, user)
+    return agent_buildings.delete(db, agent, campaign, task_id, body.building_ids)
+
+
+@router.post(
+    "/agents/{agent_id}/tasks/{task_id}/outcome", response_model=AnnotationTaskSubmitResponse
+)
+def set_agent_scene_outcome(
+    agent_id: UUID,
+    task_id: int,
+    body: AgentSceneOutcome,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
+) -> AnnotationTaskSubmitResponse:
+    """Finish one of the agent's scenes as Complete or Empty."""
+    agent, campaign, _ = service.get_agent(db, agent_id, user)
+    return agent_buildings.set_outcome(db, agent, campaign, task_id, body)
+
+
+@router.post("/agents/{agent_id}/buildings/hand-in", response_model=BuildingProgressOut)
+def hand_in_agent_buildings(
+    agent_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
+) -> BuildingProgressOut:
+    """Hand in the agent's finished scenes, as a person does."""
+    agent, campaign, _ = service.get_agent(db, agent_id, user)
+    return agent_buildings.hand_in(db, agent, campaign)

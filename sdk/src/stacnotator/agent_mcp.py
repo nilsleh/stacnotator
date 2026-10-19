@@ -13,14 +13,14 @@ import functools
 import json
 import subprocess
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from typing_extensions import Required, TypedDict
 
-from stacnotator import _credentials
+from stacnotator import _credentials, _pixels
 from stacnotator._http import Http
 from stacnotator._render_browsers import ChromiumMissingError, RenderBrowsers, install_chromium
 from stacnotator.client import Client
@@ -59,7 +59,9 @@ server = MCPServer(
     instructions=(
         "Label STACNotator campaign tasks from rendered imagery. Register one agent per "
         "worker, read the campaign guide in its context, then loop next_task -> "
-        "(get_views) -> submit_label or skip_task, always passing your own agent_id."
+        "(get_views) -> submit_label or skip_task, always passing your own agent_id. "
+        "In a building campaign (context has building_scenes) each task is a scene: loop "
+        "next_task -> draw_buildings -> get_views to check -> finish_scene, then hand_in."
     ),
 )
 
@@ -68,6 +70,9 @@ server = MCPServer(
 _agents: dict[str, dict[str, Any]] = {}
 _default_views: dict[str, list[ViewSpec]] = {}
 _current_tasks: dict[str, dict[str, Any]] = {}
+# The images last returned for each agent's current task, by 1-based position: what a
+# building drawn in image pixels is read against.
+_last_images: dict[str, dict[str, Any]] = {}
 _image_limits: dict[str, dict[str, float]] = {}
 # Task assignment locks the campaign's whole open pool, so a registration running alongside
 # another would find every task taken and get none.
@@ -204,6 +209,10 @@ async def _bundle(
         views.append(entry)
 
     drawn = [view["image_base64"] for view in rendered if "image_base64" in view]
+    _last_images[agent_id] = {
+        "task_id": summary["task"]["task_id"],
+        "metas": [view["meta"] for view in rendered if "image_base64" in view],
+    }
     agent = await _agent(agent_id)
     # Watching is a side show: a closed window never fails the agent's call.
     with contextlib.suppress(Exception):
@@ -258,6 +267,7 @@ async def register_agent(
     takes_over_work: bool = False,
     default_views: list[ViewSpec] | None = None,
     watch_window: bool = True,
+    split: str | None = None,
 ) -> str:
     """Create a labelling agent on a campaign and assign it task_count tasks.
 
@@ -272,6 +282,8 @@ async def register_agent(
     tasks after it. Omit for a built-in overview; change later with set_default_views.
     watch_window: open a window on the user's screen showing every agent's latest views.
     On by default; pass false only when the user does not want it.
+    split: building campaigns only - take scenes of this split ("val", "test"). An agent
+    gets its own copy of each scene, alongside anyone else labelling it.
 
     Returns the agent (keep agent_id), the campaign context (guide, labels, form fields,
     imagery slices, basemaps, time series), the default views and agents_page, the URL to
@@ -290,6 +302,7 @@ async def register_agent(
                     "task_count": task_count,
                     "task_set_id": task_set_id,
                     "takes_over_work": takes_over_work,
+                    "split": split,
                 }
             ),
         )
@@ -430,6 +443,97 @@ async def _annotate(agent_id: str, task_id: int, body: dict[str, Any]) -> str:
     result = await _api(_http().post, f"/agents/{agent_id}/tasks/{task_id}/annotate", body)
     _current_tasks.pop(agent_id, None)
     return _json(result)
+
+
+class BuildingSketch(TypedDict):
+    """A building outline as image pixels [[x, y], ...] (3+ corners, in order, all in one
+    map cell) and a confidence of 1-5."""
+
+    pixels: list[list[float]]
+    confidence: int
+
+
+def _current_scene(agent_id: str, task_id: int) -> dict[str, Any]:
+    task = _current_tasks.get(agent_id)
+    if task is None or task["task_id"] != task_id:
+        raise ToolError(f"Task {task_id} is not this agent's current task: call next_task.")
+    return task
+
+
+def _with_buildings(task: dict[str, Any], buildings: list[dict[str, Any]]) -> str:
+    task["buildings"] = buildings
+    return _json(
+        {
+            "task_id": task["task_id"],
+            "buildings": [
+                {"building_id": b["building_id"], "confidence": b["confidence"]} for b in buildings
+            ],
+            "note": "Your buildings are drawn in cyan from now on: call get_views to check them.",
+        }
+    )
+
+
+@server.tool(structured_output=False)
+async def draw_buildings(
+    agent_id: str, task_id: int, image: int, buildings: list[BuildingSketch]
+) -> str:
+    """Building campaigns: add buildings to the current scene, traced on one of the images
+    last returned for it (image: its 1-based position). Trace each roof outline corner by
+    corner in that image's pixels, inside the red scene outline. All buildings of one call
+    are saved together or not at all. Returns your buildings in the scene with their ids."""
+    task = _current_scene(agent_id, task_id)
+    shown = _last_images.get(agent_id)
+    if shown is None or shown["task_id"] != task_id or not 1 <= image <= len(shown["metas"]):
+        raise ToolError("image must be one of the images last returned for this task.")
+    meta = shown["metas"][image - 1]
+    try:
+        body = [
+            {"geometry_wkt": _pixels.polygon_wkt(meta, b["pixels"]), "confidence": b["confidence"]}
+            for b in buildings
+        ]
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    result = await _api(
+        _http().post, f"/agents/{agent_id}/tasks/{task_id}/buildings", {"buildings": body}
+    )
+    return _with_buildings(task, result)
+
+
+@server.tool(structured_output=False)
+async def delete_buildings(agent_id: str, task_id: int, building_ids: list[int]) -> str:
+    """Building campaigns: delete some of your buildings in the current scene, to redraw
+    them or to mark the scene empty. Returns the buildings left."""
+    task = _current_scene(agent_id, task_id)
+    result = await _api(
+        _http().post,
+        f"/agents/{agent_id}/tasks/{task_id}/buildings/delete",
+        {"building_ids": building_ids},
+    )
+    return _with_buildings(task, result)
+
+
+@server.tool(structured_output=False)
+async def finish_scene(
+    agent_id: str, task_id: int, outcome: Literal["complete", "empty"], comment: str
+) -> str:
+    """Building campaigns: finish the current scene. complete: every building in it is
+    drawn (at least one). empty: it holds no building (delete any you drew first). comment:
+    what you saw and what stayed uncertain. Then call next_task."""
+    _current_scene(agent_id, task_id)
+    result = await _api(
+        _http().post,
+        f"/agents/{agent_id}/tasks/{task_id}/outcome",
+        {"outcome": outcome, "comment": comment},
+    )
+    _current_tasks.pop(agent_id, None)
+    return _json(result)
+
+
+@server.tool(structured_output=False)
+async def hand_in(agent_id: str) -> str:
+    """Building campaigns: hand in once every assigned scene is complete or empty (skipped
+    ones block it). Returns the agent's scene counts."""
+    return _json(await _api(_http().post, f"/agents/{agent_id}/buildings/hand-in", {}))
 
 
 @server.tool(structured_output=False)

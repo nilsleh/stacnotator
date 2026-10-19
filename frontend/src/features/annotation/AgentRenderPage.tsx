@@ -58,7 +58,9 @@ function createApi(campaign: CampaignOutFull, stage: HTMLElement): AgentPageApi 
   const drawn = new Map<string, Promise<RenderedView>>();
 
   const draw = (task: AgentTask, view: ViewSpec, limits: ImageLimits): Promise<RenderedView> => {
-    const key = `${task.task_id}|${JSON.stringify(view)}|${JSON.stringify(limits)}`;
+    // The agent's own buildings are drawn on the view, so drawing one makes a new view.
+    const buildings = (task.buildings ?? []).map((b) => b.building_id).join(',');
+    const key = `${task.task_id}|${buildings}|${JSON.stringify(view)}|${JSON.stringify(limits)}`;
     const cached = drawn.get(key);
     if (cached) return cached;
     const pending = Promise.resolve()

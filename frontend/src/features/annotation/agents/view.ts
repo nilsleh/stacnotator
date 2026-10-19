@@ -10,6 +10,8 @@ export interface AgentTask {
   lat: number;
   lon: number;
   geometry_wkt: string;
+  /** Building campaigns: the agent's own buildings in this scene, drawn on its views. */
+  buildings?: { building_id: number; geometry_wkt: string; confidence: number | null }[] | null;
 }
 
 /** One panel of a view: exactly one of a slice, a basemap or a time series chart. */
@@ -155,6 +157,9 @@ export function campaignContext(campaign: CampaignOutFull) {
     sample_extent_meters: settings.sample_extent_meters ?? null,
     guide_markdown: settings.guide_markdown ?? null,
     labels: settings.labels,
+    // Set in a building campaign: each task is a scene to trace buildings in
+    // (draw_buildings, finish_scene) rather than a point to label.
+    building_scenes: settings.building_scenes ?? null,
     form_fields: settings.form_fields ?? [],
     imagery,
     basemaps: campaign.basemaps.map((b) => ({

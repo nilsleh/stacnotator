@@ -80,6 +80,24 @@ one agent: for several, start one session each. Other clients need the equivalen
 built-in tools, this one MCP server. Scores come from the campaign admin's
 `GET /campaigns/{id}/buildings/evaluation?user_id=<agent>`, never from the agent's session.
 
+## Building campaigns
+
+In a building campaign every scene is labelled by everyone assigned to it and each labeller
+is scored on their own, so an agent does not take scenes from the open pool: registering
+with `split` (`val` or `test`, matched against the scene's `raw_source_data.split`) gives it
+its own assignment for `task_count` scenes of that split. Only campaign admins can do this;
+other members hand over their own assigned scenes as usual.
+
+The agent traces buildings in image pixels. Every view's metadata carries each cell's
+rectangle in the image (`rect: [x, y, w, h]`) and zoom, and each map cell is a web mercator
+map centred on the task, so `draw_buildings` turns a pixel into lon/lat as an offset from
+the cell's centre (`sdk/src/stacnotator/_pixels.py`). The buildings are saved through the
+same bulk annotation code as the annotation page, tied to the scene by `origin_task_id`,
+and drawn back in cyan in the agent's later views. `finish_scene` records the complete or
+empty outcome and `hand_in` locks the agent's work, exactly as for a person; a scene
+holding buildings cannot be marked empty, and hand-in refuses while a scene is open or
+skipped.
+
 ## How it works
 
 ```mermaid
@@ -158,6 +176,10 @@ and how to install the plugin, and the campaign overview links to it under the t
 | `PATCH /agents/{agent_id}` | switch take-over |
 | `POST /agents/{agent_id}/next` | the current task and the next two, taking over work when empty |
 | `POST /agents/{agent_id}/tasks/{task_id}/annotate` | label or skip |
+| `POST /agents/{agent_id}/tasks/{task_id}/buildings` | add buildings to a scene (WKT, confidence) |
+| `POST /agents/{agent_id}/tasks/{task_id}/buildings/delete` | delete some of the agent's buildings in a scene |
+| `POST /agents/{agent_id}/tasks/{task_id}/outcome` | mark a scene complete or empty |
+| `POST /agents/{agent_id}/buildings/hand-in` | hand in the agent's scenes |
 
 ## Limits
 

@@ -20,12 +20,13 @@ progress, switch take-over and free tasks.
 | tool | use |
 | --- | --- |
 | `login(url)`, `list_campaigns()`, `list_agents(campaign_id)` | sign in; find the campaign; open tasks and your agents |
-| `register_agent(campaign_id, name, max_image_edge_px, max_image_megapixels, description?, task_count=10, task_set_id?, takes_over_work?, default_views?)` | one agent per worker; returns `agent_id`, `agents_page`, context, default views |
+| `register_agent(campaign_id, name, max_image_edge_px, max_image_megapixels, description?, task_count=10, task_set_id?, takes_over_work?, default_views?, split?)` | one agent per worker; returns `agent_id`, `agents_page`, context, default views |
 | `campaign_context(agent_id)` | guide, labels, form fields, imagery, basemaps, time series |
 | `next_task(agent_id)`, `get_views(agent_id, task_id, views)` | the current task with its first look; more views of it |
 | `set_default_views(agent_id, views)`, `set_image_limits(...)` | change the first look; restore limits after a restart |
 | `submit_label(agent_id, task_id, label_id, confidence, comment, form_values?, flagged_for_review?, flag_comment?)`, `skip_task(agent_id, task_id, comment)` | finish the task |
 | `release_tasks(campaign_id, agent_id?)`, `watch_agents()` | free unfinished tasks; reopen the watch window the user closed |
+| `draw_buildings(agent_id, task_id, image, buildings)`, `delete_buildings(agent_id, task_id, building_ids)`, `finish_scene(agent_id, task_id, outcome, comment)`, `hand_in(agent_id)` | building campaigns only, see [Building scenes](#building-scenes) |
 
 Image limits: the largest image your model takes in without downscaling. You know them.
 
@@ -76,6 +77,28 @@ values are in `series[].rows`.
 - `comment`: your reasoning - what the relevant dates and views showed, why that means this
   label, what ruled out the close alternatives, what stays uncertain.
 - A label fits but a human should check: `flagged_for_review` with `flag_comment`.
+
+## Building scenes
+
+A context with `building_scenes` is a building campaign: each task is a scene (one image
+chip, outlined in red) and you trace every building in it. Register with `split` (`"val"` or
+`"test"`, as the user says); `task_count` scenes of that split become your own copies.
+
+1. `next_task`: the scene at full resolution. Ask `get_views` for a higher `cell_px` when
+   roofs are small.
+2. `draw_buildings` with `image` = the image you traced on and, per building,
+   `{"pixels": [[x, y], ...], "confidence": 1-5}`: the roof outline corner by corner in
+   that image's pixels, all corners in one map cell, inside the red outline. Batch the
+   whole scene in one or a few calls.
+3. `get_views` again: your buildings are drawn in cyan. Fix misplaced or wrong ones with
+   `delete_buildings` and redraw them; add what you missed.
+4. `finish_scene` with `complete` (every building drawn) or `empty` (none; delete any you
+   drew first), and a comment on what stayed uncertain. `skip_task` only when the imagery
+   cannot tell; skipped scenes block hand-in.
+5. At `task: null`, `hand_in`.
+
+There is no answer anywhere to look at: no tool returns references or scores, so judge from
+the imagery alone.
 
 ## Several agents
 

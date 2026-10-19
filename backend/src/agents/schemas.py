@@ -13,6 +13,8 @@ class AgentRegister(BaseModel):
     task_count: int = Field(default=10, ge=0, le=1000)
     task_set_id: int | None = None
     takes_over_work: bool = False
+    # Building campaigns only: take scenes of this split ("val", "test", ...).
+    split: str | None = Field(default=None, max_length=50)
 
 
 class AgentUpdate(BaseModel):
@@ -37,12 +39,39 @@ class AgentOut(BaseModel):
     created_at: datetime
 
 
+class AgentBuildingOut(BaseModel):
+    building_id: int
+    geometry_wkt: str
+    confidence: int | None
+
+
+class AgentBuilding(BaseModel):
+    # One polygon in EPSG:4326, inside the scene.
+    geometry_wkt: str = Field(max_length=100_000)
+    confidence: int
+
+
+class AgentBuildingsCreate(BaseModel):
+    buildings: list[AgentBuilding] = Field(min_length=1, max_length=500)
+
+
+class AgentBuildingsDelete(BaseModel):
+    building_ids: list[int] = Field(min_length=1, max_length=500)
+
+
+class AgentSceneOutcome(BaseModel):
+    outcome: Literal["complete", "empty"]
+    comment: str | None = Field(default=None, max_length=5000)
+
+
 class AgentTaskOut(BaseModel):
     task_id: int
     annotation_number: int
     lat: float
     lon: float
     geometry_wkt: str
+    # Building campaigns: the agent's own buildings in this scene so far.
+    buildings: list[AgentBuildingOut] | None = None
 
 
 class NextTasksOut(BaseModel):

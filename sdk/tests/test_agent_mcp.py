@@ -25,6 +25,7 @@ class FakeBrowsers:
         self.calls = []
         self.shown = []
         self.watching = []
+        self.meta = {"cells": [{"index": 0}]}
 
     async def call(self, agent_id, campaign_id, method, *args):
         self.calls.append((method, *args))
@@ -38,7 +39,7 @@ class FakeBrowsers:
                     {
                         "view": view,
                         "image_base64": base64.b64encode(IMAGE_BYTES).decode(),
-                        "meta": {"cells": [{"index": 0}]},
+                        "meta": self.meta,
                     }
                     for view in views
                 ),
@@ -62,6 +63,7 @@ def browsers(monkeypatch):
     agent_mcp._agents.clear()
     agent_mcp._default_views.clear()
     agent_mcp._current_tasks.clear()
+    agent_mcp._last_images.clear()
     agent_mcp._image_limits.clear()
     yield fake
     agent_mcp._signed_in_http.cache_clear()
@@ -174,3 +176,53 @@ def test_login_reuses_a_saved_login_for_the_same_deployment(browsers, monkeypatc
 
     assert result == {"deployment": BASE, "signed_in_as": "rohan"}
     assert agent_mcp._session_url == BASE
+
+
+SCENE = {**TASK, "geometry_wkt": "POLYGON((30 1.5,30.001 1.5,30.001 1.501,30 1.501,30 1.5))"}
+MAP_META = {
+    "task": {"task_id": 5, "lat": 1.5, "lon": 30.0},
+    "cells": [{"i": 0, "kind": "imagery", "zoom": 19, "rect": [0, 0, 512, 512]}],
+}
+
+
+def test_a_traced_pixel_is_its_offset_from_the_cell_centre_in_mercator_pixels():
+    from stacnotator import _pixels
+
+    cell = MAP_META["cells"][0]
+    assert _pixels.pixel_to_lonlat((30.0, 1.5), cell, 256, 256) == pytest.approx((30.0, 1.5))
+    lon, _ = _pixels.pixel_to_lonlat((30.0, 1.5), cell, 512, 256)
+    assert lon - 30.0 == pytest.approx(256 / (256 * 2**19) * 360)
+    with pytest.raises(ValueError, match="same map cell"):
+        _pixels.polygon_wkt(MAP_META, [[10, 10], [600, 10], [10, 20]])
+
+
+@responses.activate
+def test_draw_buildings_sends_the_traced_outline_as_coordinates(browsers):
+    responses.get(f"{BASE}/api/agents/{AGENT}", json=AGENT_OUT)
+    responses.post(
+        f"{BASE}/api/agents/{AGENT}/next",
+        json={"campaign_id": 12, "remaining": 1, "tasks": [SCENE]},
+    )
+    drawn = [{"building_id": 41, "geometry_wkt": "POLYGON((...))", "confidence": 4}]
+    responses.post(f"{BASE}/api/agents/{AGENT}/tasks/5/buildings", json=drawn)
+    browsers.meta = MAP_META
+    asyncio.run(agent_mcp.set_image_limits(AGENT, 1000, 1.0))
+    asyncio.run(agent_mcp.next_task(AGENT))
+
+    with pytest.raises(ToolError, match="images last returned"):
+        asyncio.run(agent_mcp.draw_buildings(AGENT, 5, 3, []))
+    result = json.loads(
+        asyncio.run(
+            agent_mcp.draw_buildings(
+                AGENT, 5, 1, [{"pixels": [[256, 256], [266, 256], [266, 266]], "confidence": 4}]
+            )
+        )
+    )
+
+    body = json.loads(responses.calls[-1].request.body)
+    (building,) = body["buildings"]
+    assert building["confidence"] == 4
+    assert building["geometry_wkt"].startswith("POLYGON((30.000000000 1.500000000,")
+    assert result["buildings"] == [{"building_id": 41, "confidence": 4}]
+    # The current task now carries the building, so the next views draw it.
+    assert agent_mcp._current_tasks[AGENT]["buildings"] == drawn

@@ -56,6 +56,8 @@ const MAP_TIMEOUT_MS = 30_000;
 const RENDER_PUMP_MS = 200;
 /** Pure red, the colour agents are told marks the task. */
 const FOCUS_COLOR = '#ff0000';
+/** Cyan, the colour agents are told marks the buildings they drew. */
+const OWN_BUILDING_COLOR = '#00ffff';
 const FOCUS_LINE_PX = 2;
 /** Below this an extent box is unreadable, so the point gets a crosshair instead. */
 const MIN_BOX_PX = 6;
@@ -247,6 +249,8 @@ async function drawCell(
 
   const footprint = taskFootprint(task.geometry_wkt);
   if (footprint) layers.push(footprint);
+  const drawn = ownBuildings(task);
+  if (drawn) layers.push(drawn);
 
   const mpp = metersPerPixel(task.lat, zoom);
   const { image, tileErrors, complete } = await renderMap(
@@ -272,8 +276,28 @@ async function drawCell(
       ...details,
       zoom,
       m_per_px: Number(mpp.toFixed(2)),
+      // Where this cell sits in the image, centred on the task: what turns a pixel the
+      // agent points at back into a coordinate.
+      rect: [rect.x, rect.y, rect.width, rect.height],
       ...(warning ? { warning } : {}),
     },
+  };
+}
+
+/** The agent's own buildings, so it can check what it drew against the imagery. */
+function ownBuildings(task: AgentTask): LayerSpec | null {
+  if (!task.buildings?.length) return null;
+  const wkt = new WKT();
+  const geoJson = new GeoJSONFormat();
+  return {
+    kind: 'features',
+    id: 'own-buildings',
+    features: task.buildings.map((b) => ({
+      id: b.building_id,
+      geometry: geoJson.writeGeometryObject(wkt.readGeometry(b.geometry_wkt)),
+    })),
+    style: { stroke: { color: OWN_BUILDING_COLOR, width: FOCUS_LINE_PX } },
+    zIndex: 6,
   };
 }
 

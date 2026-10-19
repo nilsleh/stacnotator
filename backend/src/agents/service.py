@@ -7,6 +7,7 @@ from geoalchemy2.shape import to_shape
 from sqlalchemy import CursorResult, delete, exists, func, select, update
 from sqlalchemy.orm import Session, aliased, joinedload
 
+from src.agents import buildings as agent_buildings
 from src.agents.models import LabellingAgent
 from src.agents.schemas import (
     AgentAnnotate,
@@ -82,6 +83,9 @@ def register_agent(
             detail="Set the campaign's sample extent before registering agents: it is the "
             "box drawn around each point so an agent knows what it is labelling.",
         )
+    scenes = agent_buildings.is_building_campaign(campaign)
+    if req.split is not None and not scenes:
+        raise HTTPException(status_code=400, detail="split applies to building campaigns only")
 
     agent_uid = uuid4()
     db.add(
@@ -105,7 +109,9 @@ def register_agent(
     db.add(agent)
     db.commit()
 
-    if req.task_count and role == "admin":
+    if req.task_count and role == "admin" and scenes:
+        agent_buildings.assign_scenes(db, agent, req.task_count, req.split)
+    elif req.task_count and role == "admin":
         assign_tasks(db, agent, req.task_count, req.task_set_id)
     elif req.task_count:
         _hand_over_own_tasks(db, owner, agent, req.task_count, req.task_set_id)
@@ -286,14 +292,18 @@ def _task_out(task: AnnotationTask) -> AgentTaskOut:
 
 
 def next_tasks(db: Session, agent_id: UUID, owner: User) -> NextTasksOut:
-    agent, _, _ = get_agent(db, agent_id, owner)
+    agent, campaign, _ = get_agent(db, agent_id, owner)
     upcoming = _upcoming_tasks(db, agent)
     if not upcoming and agent.takes_over_work and _take_over_task(db, agent):
         upcoming = _upcoming_tasks(db, agent)
+    tasks = [_task_out(task) for task in upcoming]
+    if agent_buildings.is_building_campaign(campaign):
+        for out in tasks:
+            out.buildings = agent_buildings.buildings_out(db, campaign, out.task_id, agent.user_id)
     return NextTasksOut(
         campaign_id=agent.campaign_id,
         remaining=_open_task_count(db, agent),
-        tasks=[_task_out(task) for task in upcoming],
+        tasks=tasks,
     )
 
 
