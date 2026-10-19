@@ -10,6 +10,7 @@ import { resolveLabelStyle } from '../../campaign/labelStyle';
 import { useImageryStore } from '../../stores/imagery';
 import { usePrefsStore } from '../../stores/prefs';
 import { useCampaign } from '../../stores/campaign';
+import { buildingScenesOf } from '../../stores/sceneDrawing';
 import { MAX_PROBES, useWorkStore, type Tool } from '../../stores/work';
 import { helpRows } from '../../hotkeys';
 import { fitAnnotations } from '../../map/camera';
@@ -177,6 +178,11 @@ export function ExploreControls() {
   const toggleAnnotations = useImageryStore((s) => s.toggleAnnotations);
   const showTaskAnnotations = useImageryStore((s) => s.showTaskAnnotations);
   const toggleTaskAnnotations = useImageryStore((s) => s.toggleTaskAnnotations);
+  const showReferences = useImageryStore((s) => s.showReferences);
+  const toggleReferences = useImageryStore((s) => s.toggleReferences);
+  // Annotators are scored against the references, so only admins may draw them.
+  const canSeeReferences =
+    buildingScenesOf(campaign) !== null && (campaign.viewer_is_admin ?? false);
   const labelStyles = usePrefsStore((s) => s.labelStyles);
   const vectorShown = useImageryStore((s) => s.vector.id !== null && s.vector.visible);
   const editing = useWorkStore((s) => s.edit !== null);
@@ -445,6 +451,18 @@ export function ExploreControls() {
             />
             Show from tasks
           </label>
+          {canSeeReferences && (
+            <label className="flex items-center gap-2 text-[11px] text-neutral-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showReferences}
+                onChange={toggleReferences}
+                data-testid="show-references"
+                className="cursor-pointer"
+              />
+              Show reference footprints (admins)
+            </label>
+          )}
         </div>
 
         <ShortcutLegend />

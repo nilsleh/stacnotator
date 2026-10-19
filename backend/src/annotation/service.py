@@ -4,7 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import String, delete, func, insert, select, update
+from sqlalchemy import String, and_, delete, func, insert, select, update
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from src.annotation import claims, spatial
@@ -52,6 +52,7 @@ from src.annotation.schemas import (
 )
 from src.auth.models import User
 from src.buildings import lifecycle as buildings
+from src.buildings.references import visible_annotations
 from src.campaigns.models import Campaign
 from src.campaigns.policy import (
     build_policy_context,
@@ -991,7 +992,7 @@ def get_annotation_facets(db: Session, campaign: Campaign) -> AnnotationFacetsOu
     browser. Each one is covered by the campaign_id index and returns at most a handful
     of rows, so the cost does not grow with the number of annotations.
     """
-    where = Annotation.campaign_id == campaign.id
+    where = and_(Annotation.campaign_id == campaign.id, visible_annotations(campaign))
 
     total, with_confidence = db.execute(
         select(
@@ -1059,7 +1060,7 @@ def list_annotations_page(
     limit = max(1, min(limit, MAX_ANNOTATION_PAGE))
     offset = max(0, offset)
 
-    conditions = [Annotation.campaign_id == campaign.id]
+    conditions = [Annotation.campaign_id == campaign.id, visible_annotations(campaign)]
     if user_ids:
         conditions.append(Annotation.created_by_user_id.in_(user_ids))
     if label_ids:
@@ -1142,6 +1143,7 @@ def get_annotation_by_id(
         .where(
             Annotation.id == annotation_id,
             Annotation.campaign_id == campaign.id,
+            visible_annotations(campaign),
         )
         .options(
             joinedload(Annotation.geometry),

@@ -90,8 +90,11 @@ Complete or Empty, **Hand in** records that your set is finished and locks your 
 drawing, scoring, deleting, Complete, Empty, Skip and Draft are refused until you press
 **Withdraw hand-in**. Change what you need, then hand in again.
 
-Explore mode shows every building and the references, but adds no buildings to a scene.
-References are never shown while you draw.
+Explore mode shows every building, but adds no buildings to a scene.
+
+The reference footprints are held out: you are scored against them, so no map, list or
+poll shows them. Campaign admins can tick **Show reference footprints (admins)** under
+Display in Explore to draw them as a dashed, read-only layer.
 
 The canvas layout is `develop`'s; resize panels with **Edit Layout**.
 
@@ -103,9 +106,25 @@ The canvas layout is `develop`'s; resize panels with **Edit Layout**.
 - Each building is one feature, carrying `stacnotator_annotation_id` and its scene in
   `stacnotator_origin_task_id`. Scene outcomes are rows labelled "Buildings mapped" /
   "No buildings", with the scene geometry.
-- The default `kind=predictions` leaves references out. Use `kind=references` for the
-  imported footprints, or `kind=all` for both.
+- The default `kind=predictions` leaves references out. `kind=references` (the imported
+  footprints) and `kind=all` (both) are for campaign admins only.
 - An empty building export still has its header.
+
+## 4b. Evaluation
+
+`GET /api/campaigns/{id}/buildings/evaluation` (campaign admins) scores an annotator's
+**Complete** and **Empty** scenes against the references:
+
+- `user_id` defaults to you; `split=few_shot|val|test` restricts to one split; and
+  `iou_threshold` (default 0.5) is the IoU a building needs to match a reference.
+- Matching is greedy one-to-one, best IoU first. A building with no match is a false
+  positive, a reference with no match a false negative.
+- Returns precision, recall, F1, mean IoU and the count error, overall, per split and per
+  size class (<25 m?, 25-100 m?, >100 m?). It also gives the empty-scene false positive
+  rate (scenes without references in which something was drawn) and per-scene details
+  with matched pairs and the unmatched ids.
+- A scene without references that was marked Empty scores a perfect 1.0. Draft, Skipped
+  and To do scenes are not scored.
 
 ## 5. Backup and restore
 

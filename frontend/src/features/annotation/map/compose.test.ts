@@ -30,6 +30,7 @@ import {
   CROSSHAIR_LAYER_ID,
   EXTENT_LAYER_ID,
   ORIGIN_TASK_LAYER_ID,
+  REFERENCE_LAYER_ID,
   TILE_SKELETON_LAYER_ID,
   composeLayers,
   type ComposeState,
@@ -259,6 +260,13 @@ describe('composeLayers - explore mode', () => {
     const layers = composeLayers(ctxFor('explore'), stateWith({ showTaskAnnotations: true }));
     const annotations = layers.find((l) => l.id === ANNOTATION_LAYER_ID) as VectorTileLayerSpec;
     expect(annotations.url).toContain('include_tasks=true');
+  });
+
+  it('draws the reference footprints only when asked, from their own route', () => {
+    expect(ids(composeLayers(ctxFor('explore'), stateWith()))).not.toContain(REFERENCE_LAYER_ID);
+    const layers = composeLayers(ctxFor('explore'), stateWith({ showReferences: true }));
+    const references = layers.find((l) => l.id === REFERENCE_LAYER_ID) as VectorTileLayerSpec;
+    expect(references.url).toContain('/buildings/references/tiles/');
   });
 });
 

@@ -30,6 +30,24 @@ def task_filter_sql(include_tasks: bool) -> str:
     return "" if include_tasks else TASK_ANNOTATION_EXCLUSION
 
 
+# A building campaign holds its imported references (``source_id``) out of every
+# ordinary spatial read: annotators are scored against them (src.buildings.references).
+# The subquery is answered once per campaign, and only for rows that are references.
+HELD_OUT_REFERENCES_SQL = """
+  AND (a.source_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM data.settings s
+      WHERE s.campaign_id = a.campaign_id
+        AND jsonb_typeof(s.building_scenes) = 'object'))
+"""
+ONLY_REFERENCES_SQL = "AND a.source_id IS NOT NULL"
+
+
+def visible_filter_sql(include_tasks: bool) -> str:
+    """The rows an ordinary spatial read returns: ``task_filter_sql`` minus held-out
+    references."""
+    return f"{task_filter_sql(include_tasks)} {HELD_OUT_REFERENCES_SQL}"
+
+
 class InvalidBBoxError(ValueError):
     """Raised when a bbox query string cannot be parsed into a valid extent."""
 
@@ -62,7 +80,12 @@ def validate_tile_coords(z: int, x: int, y: int) -> None:
 
 
 def build_mvt_query(
-    z: int, x: int, y: int, campaign_id: int, include_tasks: bool = True
+    z: int,
+    x: int,
+    y: int,
+    campaign_id: int,
+    include_tasks: bool = True,
+    references: bool = False,
 ) -> tuple[str, dict]:
     """Build the PostGIS MVT query for one tile of a campaign's annotations.
 
@@ -74,9 +97,12 @@ def build_mvt_query(
     ``&&`` bbox test passes rows whose shape does not actually overlap) is
     dropped rather than emitted as an attribute-only feature.
 
-    ``include_tasks=False`` leaves out annotations made from a task.
+    ``include_tasks=False`` leaves out annotations made from a task. A building
+    campaign's references are never in these tiles; ``references=True`` builds
+    the admin-only tile of just those instead.
     """
     validate_tile_coords(z, x, y)
+    rows = ONLY_REFERENCES_SQL if references else visible_filter_sql(include_tasks)
     # S608: the only interpolations are module constants declared above. Every
     # caller-supplied value in this statement is bound.
     sql = f"""
@@ -98,7 +124,7 @@ def build_mvt_query(
             CROSS JOIN bounds
             WHERE a.campaign_id = :campaign_id
               AND g.geometry && bounds.select_4326
-              {task_filter_sql(include_tasks)}
+              {rows}
         ) AS mvt
         WHERE mvt.geom IS NOT NULL
     """  # noqa: S608

@@ -309,9 +309,27 @@ reported 0 unmatched tile URLs. `scripts/building_live_check.js` is the live bro
 - Keep `feature/building-on-develop` local; rebase on `upstream/develop` before each
   tranche and rerun its tests.
 - Fork `main` and `feature/building-annotations` stay unchanged as reference only.
+### After the milestone
+
+- [x] **Held-out references.** Imported references (`source_id`) leave every ordinary read
+  of a building campaign:
+  - the annotation tiles, ids in a bbox, extent, density and the changes poll;
+  - the annotation list, facets and single fetches.
+
+  Admins get a read-only reference tile layer (Explore > Display) and the
+  `references` / `all` exports. **Done:** `tests/test_building_references.py`; a live API
+  probe found no reference in any read; in the browser, the toggle loads reference tiles
+  only once switched on.
+- [x] **Evaluation, first port.** `GET .../buildings/evaluation` scores one annotator's
+  Complete and Empty scenes against the references (`buildings/evaluation.py`, ported from
+  the reference branch). **Done:** `tests/test_building_evaluation.py`. Live on Shanghai,
+  the per-scene results matched what was drawn, and a building drawn on a reference
+  matched it at IoU 1.0.
+
 ## Later (not in this plan)
 
-- Evaluation and benchmarking of label quality.
+- Benchmark methodology on top of the evaluation (what to score, multi-annotator
+  agreement, run history).
 - Agent/MCP work: build on `develop`'s `agents` module rather than porting the old
   `mcp_server.py` / `evaluation_service.py`. Agents today only answer per task; drawing
   buildings in a scene (polygons + scene outcome + hand-in) is out of scope for this port.

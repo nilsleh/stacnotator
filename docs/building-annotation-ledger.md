@@ -20,7 +20,7 @@ of separate **buildings** in it, each one scored 1-5, and finishes the scene wit
 | Building | Standalone `Annotation` with `origin_task_id` = scene, building label, `confidence` 1-5 | One row and geometry per building; `uq_annotation_task_user` does not apply to standalone rows, so any number per scene |
 | Outcome | The user's task annotation: label "Buildings mapped" (Complete), label "No buildings" (Empty), no label (Skip); no row = Draft or To do | `develop`'s status logic stays untouched: labels count as done, label-less as skipped |
 | Hand-in | `building_hand_ins` (campaign, user, time) | The one new table; withdrawn by deleting the row |
-| Reference | Standalone `Annotation` with a per-campaign `source_id`, no task, no `origin_task_id` | Never part of a scene, never counted, filterable in exports |
+| Reference | Standalone `Annotation` with a per-campaign `source_id`, no task, no `origin_task_id` | Never part of a scene, never counted; held out of every ordinary read, admins only |
 
 Migration: `bb1buildings` (after `at1mapaccess`).
 
@@ -50,9 +50,30 @@ Migration: `bb1buildings` (after `at1mapaccess`).
   - `GET .../buildings/scenes/{task}/buildings` (the caller's).
   - Draft (clearing a scene's outcome) has no route of its own: the client deletes its
     task annotation through `DELETE .../annotations/{id}` (refused while handed in).
+  - `GET .../buildings/references/tiles/{z}/{x}/{y}.pbf`: the references, campaign admins only.
+  - `GET .../buildings/evaluation`: scoring (below), campaign admins only.
+- `references.py`: references are held out of a building campaign's ordinary reads, so
+  scores against them mean something:
+  - the raw-SQL half is `HELD_OUT_REFERENCES_SQL` / `visible_filter_sql` in
+    `annotation/tiles.py`, used by every spatial read: tiles, ids in a bbox, extent,
+    density and the changes poll;
+  - `visible_annotations(campaign)` filters the ORM reads: the annotation list, its facets
+    and single-annotation fetches;
+  - `require_reference_access` restricts `kind=references|all` exports to campaign admins.
+- `evaluation.py` (pure) + `service.evaluate` (loader): the reference branch's polygon
+  scoring.
+  - Port: greedy one-to-one IoU matching, precision / recall / F1 / mean IoU / count
+    error, overall, per split (`raw_source_data.split`) and per size class, plus the
+    empty-scene false positive rate.
+  - Scored: one annotator's Complete and Empty scenes. A reference belongs to the scene its
+    interior lies in, since the seeder clipped each one to its chip.
+  - Not carried over: temporal deduplication and pixel-mask scoring. No curated dataset is
+    mask-based, and a scene's buildings are drawn once.
 - `seeding.py`: the curated seeder (section below).
 - Changes in `develop`'s own modules:
-  - `annotation/service.py`: hooks only.
+  - `annotation/service.py`: hooks, plus `visible_annotations` in three reads.
+  - `annotation/tiles.py` / `spatial.py`: `visible_filter_sql` in place of
+    `task_filter_sql`; `references=True` builds the admin reference tile.
   - `annotation/export.py`: `kind=predictions|references|all`; building campaigns default to
     predictions and keep a header when empty; other campaigns default to `all`, unchanged.
   - `campaigns/service.py` (`delete_annotation_tasks`): refuses to delete scenes that hold
@@ -62,7 +83,8 @@ Migration: `bb1buildings` (after `at1mapaccess`).
   - `tilers/providers.py`: `TILER_LOCAL_COG_DIR` (local COG paths allowed past the SSRF
     guard), and a `timeout` for `register_cog_on_tiler`.
 
-Tests: `tests/test_building_lifecycle.py`, `tests/test_building_seeding.py`, and
+Tests: `tests/test_building_lifecycle.py`, `tests/test_building_seeding.py`,
+`tests/test_building_references.py`, `tests/test_building_evaluation.py`, and
 `tests/unit/test_register_cog_on_tiler.py`.
 
 ## Imagery and seeding
@@ -132,6 +154,9 @@ Tests: `tests/test_building_lifecycle.py`, `tests/test_building_seeding.py`, and
 
 - A user's scenes are those assigned to them, or every scene when none are; an
   unassigned shared pool would need a different hand-in scope.
-- Agents and evaluation are out of scope; `develop`'s `agents` module only answers per task.
+- Agents are out of scope; `develop`'s `agents` module only answers per task.
+- Evaluation is a first port. Open questions: whether it should require a hand-in, how
+  multi-annotator scenes should be scored, and whether reference properties (e.g.
+  SpaceNet areas) should drive the size classes.
 - Under full parallel load, `vitest` shows timeout flakes in unrelated suites
   (`CreateCampaignPage`), which pass on their own.

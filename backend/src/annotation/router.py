@@ -53,6 +53,7 @@ from src.annotation.schemas import (
 from src.annotation.tiles import InvalidBBoxError, InvalidTileError, parse_bbox
 from src.auth.dependencies import require_authenticated_user
 from src.auth.models import User
+from src.buildings.references import require_reference_access
 from src.campaigns.dependencies import require_campaign_access, require_campaign_admin
 from src.campaigns.models import Campaign
 from src.campaigns.task_sets import require_task_set
@@ -419,11 +420,19 @@ def batch_delete_annotations(
     return BatchDeleteAnnotationsResponse(deleted_count=deleted)
 
 
+def _require_export_access(
+    db: Session, campaign: Campaign, user: User, kind: ExportKind | None
+) -> None:
+    if export.resolve_export_kind(campaign, kind) != "predictions":
+        require_reference_access(db, campaign, user)
+
+
 @router.get("/campaigns/{campaign_id}/export-annotations")
 def export_annotations(
     merge_on_agreement: bool = False,
     kind: ExportKind | None = None,
     db: Session = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
     campaign: Campaign = Depends(require_campaign_access),
 ):
     """Export campaign annotations as CSV.
@@ -435,8 +444,10 @@ def export_annotations(
 
     ``kind`` picks drawn annotations (``predictions``), imported ones
     (``references``, which carry a ``source_id``) or ``all``. It defaults to
-    ``predictions`` in building campaigns and ``all`` elsewhere.
+    ``predictions`` in building campaigns and ``all`` elsewhere; there, anything
+    with references in it is for campaign admins only.
     """
+    _require_export_access(db, campaign, user, kind)
     annotations_df = export.build_annotations_export(
         db, campaign, merge_on_agreement=merge_on_agreement, kind=kind
     )
@@ -455,12 +466,14 @@ def export_annotations_geojson(
     merge_on_agreement: bool = False,
     kind: ExportKind | None = None,
     db: Session = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
     campaign: Campaign = Depends(require_campaign_access),
 ):
     """Export all annotations for a campaign as a GeoJSON FeatureCollection file.
 
-    See ``export_annotations`` for the meaning of ``merge_on_agreement``.
+    See ``export_annotations`` for the meaning of ``merge_on_agreement`` and ``kind``.
     """
+    _require_export_access(db, campaign, user, kind)
     geojson = export.build_annotations_geojson_export(
         db, campaign, merge_on_agreement=merge_on_agreement, kind=kind
     )

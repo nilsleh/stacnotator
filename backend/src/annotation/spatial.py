@@ -13,7 +13,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from src.annotation.constants import CHANGES_LIMIT, CHANGES_OVERLAP
-from src.annotation.tiles import MIN_TILE_ZOOM, build_mvt_query, task_filter_sql
+from src.annotation.tiles import MIN_TILE_ZOOM, build_mvt_query, visible_filter_sql
 from src.campaigns.models import CampaignSettings
 
 
@@ -24,6 +24,7 @@ def render_annotation_tile(
     x: int,
     y: int,
     include_tasks: bool = True,
+    references: bool = False,
 ) -> bytes:
     """Render one MVT tile of a campaign's annotations as protobuf bytes.
 
@@ -35,7 +36,12 @@ def render_annotation_tile(
     if z < MIN_TILE_ZOOM:
         return b""
     sql, params = build_mvt_query(
-        z=z, x=x, y=y, campaign_id=campaign_id, include_tasks=include_tasks
+        z=z,
+        x=x,
+        y=y,
+        campaign_id=campaign_id,
+        include_tasks=include_tasks,
+        references=references,
     )
     tile = db.execute(text(sql), params).scalar_one()
     return bytes(tile) if tile is not None else b""
@@ -63,7 +69,7 @@ def get_annotation_ids_in_bbox(
         JOIN data.annotation_geometries g ON g.id = a.geometry_id
         WHERE a.campaign_id = :campaign_id
           AND g.geometry && ST_MakeEnvelope(:minx, :miny, :maxx, :maxy, 4326)
-          {task_filter_sql(include_tasks)}
+          {visible_filter_sql(include_tasks)}
         """  # noqa: S608
     )
     rows = db.execute(
@@ -96,7 +102,7 @@ def get_campaign_annotations_extent(
             FROM data.annotations a
             JOIN data.annotation_geometries g ON g.id = a.geometry_id
             WHERE a.campaign_id = :campaign_id
-              {task_filter_sql(include_tasks)}
+              {visible_filter_sql(include_tasks)}
         ) AS e
         """  # noqa: S608
     )
@@ -237,7 +243,7 @@ def get_annotation_density(
             FROM data.annotations a
             JOIN data.annotation_geometries g ON g.id = a.geometry_id
             WHERE a.campaign_id = :campaign_id
-              {task_filter_sql(include_tasks)}
+              {visible_filter_sql(include_tasks)}
         ) AS pts
         GROUP BY floor(ST_X(c) / :grid), floor(ST_Y(c) / :grid)
         """  # noqa: S608
@@ -282,7 +288,7 @@ def get_annotation_changes(
         JOIN data.annotation_geometries g ON g.id = a.geometry_id
         WHERE a.campaign_id = :campaign_id
           AND a.updated_at >= :since
-          {task_filter_sql(include_tasks)}
+          {visible_filter_sql(include_tasks)}
         ORDER BY a.updated_at
         LIMIT :limit
         """  # noqa: S608
@@ -347,7 +353,7 @@ def get_annotation_density_by_label(
             FROM data.annotations a
             JOIN data.annotation_geometries g ON g.id = a.geometry_id
             WHERE a.campaign_id = :campaign_id
-              {task_filter_sql(include_tasks)}
+              {visible_filter_sql(include_tasks)}
               {window}
         ) AS pts
         GROUP BY floor(ST_X(c) / :grid), floor(ST_Y(c) / :grid), label_id

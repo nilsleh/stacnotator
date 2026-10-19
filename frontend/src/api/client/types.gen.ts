@@ -1392,6 +1392,74 @@ export type BodyIngestAnnotationsFromGeojson = {
 };
 
 /**
+ * BuildingMatchOut
+ */
+export type BuildingMatchOut = {
+    /**
+     * Building Id
+     */
+    building_id: number;
+    /**
+     * Reference Id
+     */
+    reference_id: number;
+    /**
+     * Iou
+     */
+    iou: number;
+};
+
+/**
+ * BuildingMetricsOut
+ */
+export type BuildingMetricsOut = {
+    /**
+     * True Positives
+     */
+    true_positives: number;
+    /**
+     * False Positives
+     */
+    false_positives: number;
+    /**
+     * False Negatives
+     */
+    false_negatives: number;
+    /**
+     * Precision
+     */
+    precision: number;
+    /**
+     * Recall
+     */
+    recall: number;
+    /**
+     * F1
+     */
+    f1: number;
+    /**
+     * Mean Iou
+     */
+    mean_iou: number;
+    /**
+     * Predicted Count
+     */
+    predicted_count: number;
+    /**
+     * Reference Count
+     */
+    reference_count: number;
+    /**
+     * Count Error
+     */
+    count_error: number;
+    /**
+     * Iou Threshold
+     */
+    iou_threshold: number;
+};
+
+/**
  * BuildingProgressOut
  *
  * The requesting user's scenes in a building campaign, in task order.
@@ -1430,6 +1498,59 @@ export type BuildingScenes = {
      * Empty Label Id
      */
     empty_label_id: number;
+};
+
+/**
+ * BuildingsEvaluationOut
+ *
+ * One annotator's finished scenes scored against the campaign's references.
+ */
+export type BuildingsEvaluationOut = {
+    /**
+     * Campaign Id
+     */
+    campaign_id?: number | null;
+    /**
+     * User Id
+     */
+    user_id?: string | null;
+    /**
+     * Split
+     */
+    split?: string | null;
+    /**
+     * Iou Threshold
+     */
+    iou_threshold: number;
+    overall: BuildingMetricsOut;
+    /**
+     * By Split
+     */
+    by_split: {
+        [key: string]: BuildingMetricsOut;
+    };
+    /**
+     * By Size Bucket
+     */
+    by_size_bucket: {
+        [key: string]: BuildingMetricsOut;
+    };
+    /**
+     * Empty Scenes
+     */
+    empty_scenes: number;
+    /**
+     * Empty Scenes With False Positives
+     */
+    empty_scenes_with_false_positives: number;
+    /**
+     * Empty Scene Fpr
+     */
+    empty_scene_fpr: number;
+    /**
+     * Scenes
+     */
+    scenes: Array<SceneEvaluationOut>;
 };
 
 /**
@@ -4189,6 +4310,41 @@ export type SamplingStrategy = ({
 } & RandomSamplingConfig) | ({
     strategy_type: 'grid';
 } & GridSamplingConfig);
+
+/**
+ * SceneEvaluationOut
+ */
+export type SceneEvaluationOut = {
+    /**
+     * Task Id
+     */
+    task_id: number;
+    /**
+     * Annotation Number
+     */
+    annotation_number: number;
+    /**
+     * Split
+     */
+    split: string | null;
+    /**
+     * Outcome
+     */
+    outcome: string;
+    metrics: BuildingMetricsOut;
+    /**
+     * Matches
+     */
+    matches: Array<BuildingMatchOut>;
+    /**
+     * False Positive Ids
+     */
+    false_positive_ids: Array<number>;
+    /**
+     * False Negative Ids
+     */
+    false_negative_ids: Array<number>;
+};
 
 /**
  * SceneProgressOut
@@ -9682,6 +9838,89 @@ export type GetSceneBuildingsResponses = {
 };
 
 export type GetSceneBuildingsResponse = GetSceneBuildingsResponses[keyof GetSceneBuildingsResponses];
+
+export type GetReferenceTileData = {
+    body?: never;
+    path: {
+        /**
+         * Campaign Id
+         */
+        campaign_id: number;
+        /**
+         * Z
+         */
+        z: number;
+        /**
+         * X
+         */
+        x: number;
+        /**
+         * Y
+         */
+        y: number;
+    };
+    query?: never;
+    url: '/api/campaigns/{campaign_id}/buildings/references/tiles/{z}/{x}/{y}.pbf';
+};
+
+export type GetReferenceTileErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetReferenceTileError = GetReferenceTileErrors[keyof GetReferenceTileErrors];
+
+export type GetReferenceTileResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type EvaluateBuildingsData = {
+    body?: never;
+    path: {
+        /**
+         * Campaign Id
+         */
+        campaign_id: number;
+    };
+    query?: {
+        /**
+         * User Id
+         */
+        user_id?: string | null;
+        /**
+         * Split
+         */
+        split?: string | null;
+        /**
+         * Iou Threshold
+         */
+        iou_threshold?: number;
+    };
+    url: '/api/campaigns/{campaign_id}/buildings/evaluation';
+};
+
+export type EvaluateBuildingsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type EvaluateBuildingsError = EvaluateBuildingsErrors[keyof EvaluateBuildingsErrors];
+
+export type EvaluateBuildingsResponses = {
+    /**
+     * Successful Response
+     */
+    200: BuildingsEvaluationOut;
+};
+
+export type EvaluateBuildingsResponse = EvaluateBuildingsResponses[keyof EvaluateBuildingsResponses];
 
 export type GetTimeseriesForCampaignData = {
     body?: never;

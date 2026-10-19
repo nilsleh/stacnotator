@@ -454,6 +454,8 @@ def _create_campaign(
                 TaskSet.campaign_id == campaign_id, TaskSet.name == DEFAULT_TASK_SET_NAME
             )
         )
+        if task_set_id is None:
+            raise ValueError(f"Campaign {campaign_id} has no default task set")
         insert_tasks(
             db,
             campaign_id,

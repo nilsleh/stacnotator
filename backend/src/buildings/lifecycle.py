@@ -361,16 +361,17 @@ def scene_summaries(
 ) -> list[SceneSummary]:
     scenes = user_scenes(db, campaign.id, user_id)
     ids = [s.id for s in scenes]
-    outcomes: dict[int, int | None] = {}
+    outcomes: dict[int | None, int | None] = {}
     if ids:
-        outcomes = dict(
-            db.execute(
+        outcomes = {
+            task_id: label_id
+            for task_id, label_id in db.execute(
                 select(Annotation.annotation_task_id, Annotation.label_id).where(
                     Annotation.annotation_task_id.in_(ids),
                     Annotation.created_by_user_id == user_id,
                 )
-            ).all()
-        )
+            )
+        }
     counts = _building_counts(db, user_id, ids)
     summaries = []
     for s in scenes:

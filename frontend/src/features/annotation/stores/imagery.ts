@@ -28,6 +28,9 @@ export interface ImageryState extends ImageryNavState {
   /** Location whose 204s populate `empties`. Empty imagery is spatial, so one
    *  task's result must not leak into another's date selector. */
   emptyScope: string | null;
+  /** Building campaigns, admins only: draw the imported reference footprints,
+   *  which every other read holds out. Off by default. */
+  showReferences: boolean;
 
   setAddress: (address: SliceAddress | null) => void;
   rememberWindowSlice: (collectionId: number, sliceIndex: number, byUser?: boolean) => void;
@@ -43,6 +46,7 @@ export interface ImageryState extends ImageryNavState {
   toggleCrosshair: () => void;
   toggleAnnotations: () => void;
   toggleTaskAnnotations: () => void;
+  toggleReferences: () => void;
   toggleViewSync: () => void;
   overlayAction: (items: Array<{ id: number }>, action: OverlayAction) => void;
   setOverlayOpacity: (opacity: number) => void;
@@ -135,6 +139,7 @@ export const useImageryStore = create<ImageryState>((set) => ({
   viewSnapshots: {},
   windowSlices: {},
   emptyScope: null,
+  showReferences: false,
 
   setAddress: (address) => set((s) => land(s, address)),
 
@@ -170,6 +175,7 @@ export const useImageryStore = create<ImageryState>((set) => ({
   toggleCrosshair: () => set((s) => ({ crosshair: !s.crosshair })),
   toggleAnnotations: () => set((s) => ({ showAnnotations: !s.showAnnotations })),
   toggleTaskAnnotations: () => set((s) => ({ showTaskAnnotations: !s.showTaskAnnotations })),
+  toggleReferences: () => set((s) => ({ showReferences: !s.showReferences })),
   toggleViewSync: () => set((s) => ({ viewSync: !s.viewSync })),
 
   overlayAction: (items, action) =>

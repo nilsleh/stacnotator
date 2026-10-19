@@ -20,6 +20,8 @@ export const ANNOTATION_DELTA_LAYER_ID = 'annotations-delta';
 export const ANNOTATION_MARKER_LAYER_ID = 'annotations-new';
 /** The shapes drawn in the open scene, in Tasks mode. */
 export const SCENE_LAYER_ID = 'scene-annotations';
+/** A building campaign's reference footprints, read-only and for admins. */
+export const REFERENCE_LAYER_ID = 'building-references';
 
 /** Saved annotations come from the tiles, from the overlay of what the tiles do
  *  not carry yet, and - for the ones another annotator just made - from the
@@ -142,6 +144,8 @@ export interface ComposeState extends ImageryNavState {
   originTask?: OriginTask | null;
   /** Tasks mode on a scene: the shapes drawn in it, `label_id` in properties. */
   sceneAnnotations?: GeoFeature[];
+  /** Draw a building campaign's reference footprints (admins only). */
+  showReferences?: boolean;
 }
 
 /** `v` is the version the tiles were fetched at: changing it is what fetches
@@ -153,6 +157,14 @@ export const annotationTilesUrl = (campaignId: number, version: number, includeT
     `/api/campaigns/${campaignId}/annotations/tiles/{z}/{x}/{y}.pbf` +
       `?v=${version}&include_tasks=${includeTasks}`
   );
+
+export const referenceTilesUrl = (campaignId: number) =>
+  apiUrl(`/api/campaigns/${campaignId}/buildings/references/tiles/{z}/{x}/{y}.pbf`);
+
+const REFERENCE_STYLE: StyleSpec = {
+  fill: { color: 'rgba(250,204,21,0.15)' },
+  stroke: { color: 'rgba(234,179,8,1)', width: 1.5, dash: [4, 3] },
+};
 
 function selectedBasemap(cat: ImageryCatalog, selectedBasemapId: string | null) {
   const id = Number(selectedBasemapId?.replace('basemap-', ''));
@@ -398,6 +410,19 @@ export function composeLayers(ctx: ComposeContext, state: ComposeState): LayerSp
         zIndex: ANNOTATION_MARKER_Z,
       });
     }
+  }
+
+  // Not an annotation layer, so nothing selects, edits or deletes a reference.
+  if (mode === 'explore' && !isWindow && state.showReferences) {
+    layers.push({
+      kind: 'vector-tiles',
+      id: REFERENCE_LAYER_ID,
+      url: referenceTilesUrl(catalog.campaignId),
+      auth: 'bearer',
+      minZoom: ANNOTATION_TILE_MIN_ZOOM - 1,
+      style: REFERENCE_STYLE,
+      zIndex: ANNOTATION_Z - 1,
+    });
   }
 
   // A scene's own shapes are its subject, so a scene task draws them - and
