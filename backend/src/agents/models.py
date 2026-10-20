@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Text, false, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.auth.models import User
@@ -40,41 +40,6 @@ class LabellingAgent(Base):
     )
 
     user: Mapped[User] = relationship(foreign_keys=[user_id])
-
-
-class AgentOperation(Base):
-    """Successful responses retained for the lifetime of the campaign/principal."""
-
-    __tablename__ = "agent_operations"
-    __table_args__ = {"schema": "data"}
-
-    principal_id: Mapped[UUID] = mapped_column(
-        ForeignKey("auth.users.id", ondelete="CASCADE"), primary_key=True
-    )
-    target: Mapped[str] = mapped_column(Text, primary_key=True)
-    operation_id: Mapped[UUID] = mapped_column(primary_key=True)
-    campaign_id: Mapped[int] = mapped_column(
-        ForeignKey("data.campaigns.id", ondelete="CASCADE"), nullable=False
-    )
-    payload_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    response: Mapped[object] = mapped_column(JSON, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
-class AgentRender(Base):
-    __tablename__ = "agent_renders"
-    __table_args__ = {"schema": "data"}
-
-    id: Mapped[UUID] = mapped_column(primary_key=True)
-    agent_id: Mapped[UUID] = mapped_column(
-        ForeignKey("data.labelling_agents.user_id", ondelete="CASCADE"), index=True
-    )
-    task_id: Mapped[int] = mapped_column(ForeignKey("data.annotation_tasks.id", ondelete="CASCADE"))
-    image_sha256: Mapped[str] = mapped_column(Text)
-    image_metadata: Mapped[dict] = mapped_column(JSON)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class AgentCredential(Base):

@@ -108,12 +108,8 @@ def test_agent_migrations_upgrade_backfill_and_downgrade(monkeypatch):
             db.commit()
         command.upgrade(alembic, "head")
         tables = inspect(engine).get_table_names(schema="data")
-        assert {
-            "agent_operations",
-            "agent_renders",
-            "agent_credentials",
-            "building_scene_sources",
-        } <= set(tables)
+        assert {"agent_credentials", "building_scene_sources"} <= set(tables)
+        assert not {"agent_operations", "agent_renders"}.intersection(tables)
         annotations = Table("annotations", MetaData(), schema="data", autoload_with=engine)
         with engine.connect() as connection:
             provenance = dict(

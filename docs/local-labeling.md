@@ -238,8 +238,9 @@ scenes.
   with a 1-5 score. The API's error message names the rule.
 ## Agent recovery
 
-Agent clients should persist `operation_id` UUIDs before registration and building
-mutations, and retry ambiguous responses with the identical request. Registration and
-assignment now commit atomically. Use the agent progress and individual scene reads to
-resume without releasing assignments; a skipped scene is unfinished even with an empty
-queue. See [agent recovery and retries](agentic-labelling.md#recovery-and-retries).
+Registration and assignment commit atomically, but requests are not deduplicated.
+After an uncertain registration, inspect the owner's agent list; after an uncertain
+building write, read the agent's saved scene before another mutation. Never blindly
+retry a creation request. Resume without releasing assignments and request fresh views
+after restarting MCP. A skipped scene is unfinished even with an empty queue.
+See [agent recovery and retries](agentic-labelling.md#recovery-and-retries).

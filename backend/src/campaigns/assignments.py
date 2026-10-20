@@ -153,7 +153,7 @@ def assign_tasks_to_users(
     """
     Assign annotation tasks to campaign members. "explicit" assigns the given
     mapping directly; "even" and "fixed_per_user" distribute the pool of
-    unassigned, unannotated tasks across the selected users.
+    unassigned, unannotated tasks across the selected users. The caller commits.
     """
     if req.strategy == "explicit":
         mapping = {
@@ -193,7 +193,7 @@ def assign_tasks_to_users(
                     user_id=user_id,
                 )
             )
-        db.commit()
+        db.flush()
 
     return AssignTasksToUsersResult(total_assigned=len(new_pairs))
 

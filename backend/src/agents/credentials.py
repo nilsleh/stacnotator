@@ -28,7 +28,6 @@ EXECUTION_ROUTES = frozenset(
         "delete_agent_buildings",
         "set_agent_scene_outcome",
         "hand_in_agent_buildings",
-        "register_agent_render",
         "edit_agent_building",
         "search_planet_scenes",
         "mint_planet_scene_layers",

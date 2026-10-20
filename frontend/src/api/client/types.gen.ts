@@ -100,10 +100,6 @@ export type AddUsersByEmailResult = {
  */
 export type AgentAnnotate = {
     /**
-     * Operation Id
-     */
-    operation_id?: string | null;
-    /**
      * Label Id
      */
     label_id: number | null;
@@ -158,28 +154,6 @@ export type AgentBuilding = {
 };
 
 /**
- * AgentBuildingEdit
- */
-export type AgentBuildingEdit = {
-    /**
-     * Geometry Wkt
-     */
-    geometry_wkt: string;
-    /**
-     * Confidence
-     */
-    confidence: number;
-    /**
-     * Operation Id
-     */
-    operation_id?: string | null;
-    /**
-     * Render Id
-     */
-    render_id?: string | null;
-};
-
-/**
  * AgentBuildingOut
  */
 export type AgentBuildingOut = {
@@ -202,27 +176,15 @@ export type AgentBuildingOut = {
  */
 export type AgentBuildingsCreate = {
     /**
-     * Operation Id
-     */
-    operation_id?: string | null;
-    /**
      * Buildings
      */
     buildings: Array<AgentBuilding>;
-    /**
-     * Render Id
-     */
-    render_id?: string | null;
 };
 
 /**
  * AgentBuildingsDelete
  */
 export type AgentBuildingsDelete = {
-    /**
-     * Operation Id
-     */
-    operation_id?: string | null;
     /**
      * Building Ids
      */
@@ -255,16 +217,6 @@ export type AgentCredentialOut = {
      * Expires At
      */
     expires_at: string;
-};
-
-/**
- * AgentOperationRequest
- */
-export type AgentOperationRequest = {
-    /**
-     * Operation Id
-     */
-    operation_id?: string | null;
 };
 
 /**
@@ -318,10 +270,6 @@ export type AgentOut = {
  */
 export type AgentRegister = {
     /**
-     * Operation Id
-     */
-    operation_id?: string | null;
-    /**
      * Name
      */
     name: string;
@@ -348,36 +296,6 @@ export type AgentRegister = {
 };
 
 /**
- * AgentRenderCreate
- */
-export type AgentRenderCreate = {
-    /**
-     * Image Sha256
-     */
-    image_sha256: string;
-    /**
-     * Metadata
-     */
-    metadata: {
-        [key: string]: unknown;
-    };
-};
-
-/**
- * AgentRenderOut
- */
-export type AgentRenderOut = {
-    /**
-     * Render Id
-     */
-    render_id: string;
-    /**
-     * Expires At
-     */
-    expires_at: string;
-};
-
-/**
  * AgentSceneOut
  */
 export type AgentSceneOut = {
@@ -391,10 +309,6 @@ export type AgentSceneOut = {
  */
 export type AgentSceneOutcome = {
     /**
-     * Operation Id
-     */
-    operation_id?: string | null;
-    /**
      * Outcome
      */
     outcome: 'complete' | 'empty';
@@ -402,10 +316,6 @@ export type AgentSceneOutcome = {
      * Comment
      */
     comment?: string | null;
-    /**
-     * Render Id
-     */
-    render_id?: string | null;
 };
 
 /**
@@ -12294,40 +12204,6 @@ export type RevokeAgentCredentialResponses = {
 
 export type RevokeAgentCredentialResponse = RevokeAgentCredentialResponses[keyof RevokeAgentCredentialResponses];
 
-export type RegisterAgentRenderData = {
-    body: AgentRenderCreate;
-    path: {
-        /**
-         * Agent Id
-         */
-        agent_id: string;
-        /**
-         * Task Id
-         */
-        task_id: number;
-    };
-    query?: never;
-    url: '/api/agents/{agent_id}/tasks/{task_id}/renders';
-};
-
-export type RegisterAgentRenderErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type RegisterAgentRenderError = RegisterAgentRenderErrors[keyof RegisterAgentRenderErrors];
-
-export type RegisterAgentRenderResponses = {
-    /**
-     * Successful Response
-     */
-    200: AgentRenderOut;
-};
-
-export type RegisterAgentRenderResponse = RegisterAgentRenderResponses[keyof RegisterAgentRenderResponses];
-
 export type NextAgentTasksData = {
     body?: never;
     path: {
@@ -12465,7 +12341,7 @@ export type DeleteAgentBuildingsResponses = {
 export type DeleteAgentBuildingsResponse = DeleteAgentBuildingsResponses[keyof DeleteAgentBuildingsResponses];
 
 export type EditAgentBuildingData = {
-    body: AgentBuildingEdit;
+    body: AgentBuilding;
     path: {
         /**
          * Agent Id
@@ -12539,10 +12415,7 @@ export type SetAgentSceneOutcomeResponses = {
 export type SetAgentSceneOutcomeResponse = SetAgentSceneOutcomeResponses[keyof SetAgentSceneOutcomeResponses];
 
 export type HandInAgentBuildingsData = {
-    /**
-     * Body
-     */
-    body?: AgentOperationRequest | null;
+    body?: never;
     path: {
         /**
          * Agent Id

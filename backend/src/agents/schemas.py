@@ -1,19 +1,14 @@
-import json
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from src.annotation.schemas import AnnotationFromTaskCreate
 from src.buildings.schemas import HandInOut, SceneProgressOut
 
 
-class AgentOperationRequest(BaseModel):
-    operation_id: UUID | None = None
-
-
-class AgentRegister(AgentOperationRequest):
+class AgentRegister(BaseModel):
     name: str = Field(min_length=1, max_length=20, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
     description: str | None = Field(default=None, max_length=2000)
     task_count: int = Field(default=10, ge=0, le=1000)
@@ -27,7 +22,7 @@ class AgentUpdate(BaseModel):
     takes_over_work: bool
 
 
-class AgentAnnotate(AnnotationFromTaskCreate, AgentOperationRequest):
+class AgentAnnotate(AnnotationFromTaskCreate):
     comment: str | None = Field(default=None, max_length=5000)
 
 
@@ -57,23 +52,17 @@ class AgentBuilding(BaseModel):
     confidence: int
 
 
-class AgentBuildingsCreate(AgentOperationRequest):
+class AgentBuildingsCreate(BaseModel):
     buildings: list[AgentBuilding] = Field(min_length=1, max_length=500)
-    render_id: UUID | None = None
 
 
-class AgentBuildingsDelete(AgentOperationRequest):
+class AgentBuildingsDelete(BaseModel):
     building_ids: list[int] = Field(min_length=1, max_length=500)
 
 
-class AgentBuildingEdit(AgentOperationRequest, AgentBuilding):
-    render_id: UUID | None = None
-
-
-class AgentSceneOutcome(AgentOperationRequest):
+class AgentSceneOutcome(BaseModel):
     outcome: Literal["complete", "empty"]
     comment: str | None = Field(default=None, max_length=5000)
-    render_id: UUID | None = None
 
 
 class AgentTaskOut(BaseModel):
@@ -99,26 +88,6 @@ class AgentSceneOut(BaseModel):
     task: AgentTaskOut
     progress: SceneProgressOut
     hand_in: HandInOut
-
-
-class AgentRenderCreate(BaseModel):
-    image_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    metadata: dict[str, Any]
-
-    @field_validator("metadata")
-    @classmethod
-    def bounded_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if len(json.dumps(value, allow_nan=False)) > 200_000:
-            raise ValueError("Render metadata exceeds 200 KB")
-        cells = value.get("cells", [])
-        if not isinstance(cells, list) or any(not isinstance(cell, dict) for cell in cells):
-            raise ValueError("Render cells must be a list of metadata objects")
-        return value
-
-
-class AgentRenderOut(BaseModel):
-    render_id: UUID
-    expires_at: datetime
 
 
 class AgentCredentialCreate(BaseModel):

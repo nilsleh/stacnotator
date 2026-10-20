@@ -110,7 +110,7 @@ def register_agent(
         takes_over_work=req.takes_over_work,
     )
     db.add(agent)
-    db.commit()
+    db.flush()
 
     if req.task_count and role == "admin" and scenes:
         agent_buildings.assign_scenes(db, agent, req.task_count, req.split)
@@ -118,6 +118,7 @@ def register_agent(
         assign_tasks(db, agent, req.task_count, req.task_set_id)
     elif req.task_count:
         _hand_over_own_tasks(db, owner, agent, req.task_count, req.task_set_id)
+    db.commit()
     return agent
 
 
@@ -159,7 +160,7 @@ def _hand_over_own_tasks(
     ).all()
     for assignment in assignments:
         assignment.user_id = agent.user_id
-    db.commit()
+    db.flush()
     return len(assignments)
 
 
@@ -416,7 +417,7 @@ def submit_annotation(
         if agent_buildings.is_building_campaign(campaign) and body.label_id is not None:
             raise HTTPException(
                 status_code=409,
-                detail="Use the scene outcome endpoint with a successful render ID",
+                detail="Use the scene outcome endpoint for building campaigns",
             )
     return annotation_service.submit_task_annotation(
         db=db, campaign=campaign, task_id=task_id, annotation_create=body, user_id=agent.user_id

@@ -372,7 +372,9 @@ def assign_tasks_to_users(
     """Assign annotation tasks to campaign members from an intent (even / fixed-per-user / explicit). The server selects and distributes the tasks."""
     if req.task_set_id is not None:
         task_sets.require_task_set(db, campaign.id, req.task_set_id, status_code=400)
-    return assignments.assign_tasks_to_users(db, campaign_id, req)
+    result = assignments.assign_tasks_to_users(db, campaign_id, req)
+    db.commit()
+    return result
 
 
 @router.delete(

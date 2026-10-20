@@ -13,10 +13,9 @@ from geoalchemy2.shape import to_shape
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.agents import renders
 from src.agents.models import LabellingAgent
 from src.agents.schemas import (
-    AgentBuildingEdit,
+    AgentBuilding,
     AgentBuildingOut,
     AgentBuildingsCreate,
     AgentSceneOut,
@@ -73,8 +72,6 @@ def draw(
     db: Session, agent: LabellingAgent, campaign: Campaign, task_id: int, body: AgentBuildingsCreate
 ) -> list[AgentBuildingOut]:
     _require_scene(db, agent, campaign, task_id)
-    if body.render_id is not None:
-        renders.validate(db, body.render_id, agent.user_id, task_id)
     cfg = lifecycle.require_building_campaign(campaign)
     annotation_service.create_annotations_bulk(
         db,
@@ -114,11 +111,9 @@ def edit(
     campaign: Campaign,
     task_id: int,
     building_id: int,
-    body: AgentBuildingEdit,
+    body: AgentBuilding,
 ) -> list[AgentBuildingOut]:
     _require_scene(db, agent, campaign, task_id)
-    if body.render_id is not None:
-        renders.validate(db, body.render_id, agent.user_id, task_id)
     own = {b.building_id for b in buildings_out(db, campaign, task_id, agent.user_id)}
     if building_id not in own:
         raise HTTPException(
@@ -144,10 +139,6 @@ def set_outcome(
     db: Session, agent: LabellingAgent, campaign: Campaign, task_id: int, body: AgentSceneOutcome
 ) -> AnnotationTaskSubmitResponse:
     _require_scene(db, agent, campaign, task_id)
-    if body.render_id is None and db.info.get("execution_agent_id") is not None:
-        raise HTTPException(status_code=409, detail="Execution scene outcome requires a render ID")
-    if body.render_id is not None:
-        renders.validate(db, body.render_id, agent.user_id, task_id, require_ready=True)
     cfg = lifecycle.require_building_campaign(campaign)
     label_id = cfg.complete_label_id if body.outcome == "complete" else cfg.empty_label_id
     return annotation_service.submit_task_annotation(
@@ -199,7 +190,7 @@ def assign_scenes(db: Session, agent: LabellingAgent, count: int, split: str | N
         query = query.where(AnnotationTask.raw_source_data["split"].astext == split)
     task_ids = db.scalars(query.order_by(AnnotationTask.annotation_number).limit(count)).all()
     db.add_all(AnnotationTaskAssignment(task_id=t, user_id=agent.user_id) for t in task_ids)
-    db.commit()
+    db.flush()
     return len(task_ids)
 
 

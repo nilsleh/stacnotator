@@ -122,17 +122,16 @@ skipped.
 
 Each returned image has an immutable `render_id`, agent/task binding, `image_sha256`,
 dimensions, per-cell rectangles and rendering configuration. Archive the MCP Image
-bytes alongside their JSON metadata to preserve exactly what the agent saw; the backend
-stores metadata, not image history. Backend references expire after one hour. The SDK
-retains at most 256 references; restart or eviction requires fresh views. Unknown,
-expired, cross-agent, cross-scene or wrong-image references fail, never fall back to the
-latest image.
+bytes alongside their JSON metadata to preserve the returned image. References live only
+in the MCP process, not the backend or database. The SDK retains at most 256 references;
+restart or eviction requires fresh views. Unknown, cross-agent, cross-scene or wrong-image
+references fail, never fall back to the latest image.
 
 Pass `render_id` and the image's 1-based `image` number to `draw_buildings`,
 `edit_building` and `finish_scene`. `edit_building` replaces an owned polygon while
 preserving its ID, accepts interior `holes`, validates confidence/containment and reopens
 finished work unless handed in. Deletion remains explicit. Pixel rings must stay in one
-map cell, outside caption space. Direct legacy WKT clients may omit rendering references.
+map cell, outside caption space. The backend accepts WGS84 geometry, not render references.
 
 Building views fit the entire scene by default, with captions above the useful map area.
 Explicit zoom overrides are preserved; `fit_scene` requests scene fitting. Per-chip
@@ -140,25 +139,25 @@ campaigns pin each task to its imagery slice and reject a different slice.
 Per-cell status is `ready`, `partial` or `failed`, with tile errors, pending tiles,
 timeout and in-scene missing-pixel coverage. Transparency outside the scene is not a
 missing-data error. Failed/partial renders are not retained in the page cache.
-Pixel tracing rejects failed imagery. MCP finishing, and restricted API outcomes, require
-a ready imagery render; generic label submission cannot bypass that requirement.
-This detects rendering failures, not the truth of client-supplied metadata or annotation.
+Pixel tracing rejects failed imagery and MCP finishing requires a ready imagery render.
+The API enforces scene ownership and lifecycle rules, not whether a client rendered or
+looked at an image. Restricted building clients submit completion through the scene outcome
+endpoint, not generic label submission.
 
 ### Recovery and retries
 
-Persist a caller-generated UUID `operation_id` before registration or a building write.
-Registration, drawing, editing, deleting, finishing, task submission and hand-in accept it. Reuse
-the same ID and payload after an ambiguous response: concurrent retries wait for the
-first transaction and return its original response; a changed payload returns HTTP 409.
-IDs are scoped to the authenticated principal and endpoint target. Successful responses
-are retained until the campaign or principal is deleted. Failed transactions leave no
-receipt or partial effects, including registration's assignments. Omitting the ID keeps
-legacy behavior (no replay guarantee).
+Writes are not deduplicated and ambiguous responses must not be retried blindly. Registration
+and assignment commit together, and a batch of buildings is saved atomically. A timeout
+can still occur after a successful commit. After uncertain registration, the owner must
+inspect `list_agents` and recover the existing agent rather than automatically create
+another. Keep its `agent_id` outside the MCP process.
 
-The replayed response is historical, not a current scene snapshot. Read
+After an uncertain building write, read
 `GET /agents/{id}/buildings/progress` (`agent_progress`) and
 `GET /agents/{id}/tasks/{task}/scene` (`open_scene`) to reconcile current buildings,
-todo/draft/skipped/complete/empty states and hand-in. `open_scene` also restores the MCP
+todo/draft/skipped/complete/empty states and hand-in before another mutation. These reads
+show current state, not proof that a particular request ran; if the result remains ambiguous,
+stop for owner reconciliation instead of resending a creation request. `open_scene` restores the MCP
 current scene after restart or revisits skipped/finished work; it does not change an
 outcome or unlock handed-in work. Set image limits again and request fresh views after
 restarting. Normal resume never releases assignments. An empty `next_task` queue is not

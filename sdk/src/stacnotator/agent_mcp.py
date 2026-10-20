@@ -67,7 +67,10 @@ server = MCPServer(
         "worker, read the campaign guide in its context, then loop next_task -> "
         "(get_views) -> submit_label or skip_task, always passing your own agent_id. "
         "In a building campaign (context has building_scenes) each task is a scene: loop "
-        "next_task -> draw_buildings -> get_views to check -> finish_scene, then hand_in."
+        "next_task -> draw_buildings -> get_views to check -> finish_scene, then hand_in. "
+        "After an uncertain write, read saved state with open_scene/agent_progress before "
+        "another mutation; writes are not deduplicated. After uncertain registration, "
+        "the owner must check list_agents before registering again."
     ),
 )
 
@@ -76,8 +79,7 @@ server = MCPServer(
 _agents: dict[str, dict[str, Any]] = {}
 _default_views: dict[str, list[ViewSpec]] = {}
 _current_tasks: dict[str, dict[str, Any]] = {}
-# The images last returned for each agent's current task, by 1-based position: what a
-# building drawn in image pixels is read against.
+# Immutable image metadata keyed by a process-local render ID.
 _render_refs: dict[str, dict[str, Any]] = {}
 _image_limits: dict[str, dict[str, float]] = {}
 # Task assignment locks the campaign's whole open pool, so a registration running alongside
@@ -224,18 +226,9 @@ async def _bundle(
             entry["meta"] = copy.deepcopy(view["meta"])
             entry["image_sha256"] = hashlib.sha256(data).hexdigest()
             task_id = summary["task"]["task_id"]
-            reference = {"render_id": str(uuid4())}
-            if summary["task"].get("buildings") is not None:
-                reference = await _api(
-                    _http().post,
-                    f"/agents/{agent_id}/tasks/{task_id}/renders",
-                    {
-                        "image_sha256": entry["image_sha256"],
-                        "metadata": {**entry["meta"], "view": view["view"]},
-                    },
-                )
-            entry.update(reference)
-            _render_refs[reference["render_id"]] = {
+            render_id = str(uuid4())
+            entry["render_id"] = render_id
+            _render_refs[render_id] = {
                 "agent_id": agent_id,
                 "task_id": task_id,
                 "image": entry["image"],
@@ -305,7 +298,6 @@ async def register_agent(
     default_views: list[ViewSpec] | None = None,
     watch_window: bool = True,
     split: str | None = None,
-    operation_id: str | None = None,
 ) -> str:
     """Create a labelling agent on a campaign and assign it task_count tasks.
 
@@ -322,8 +314,8 @@ async def register_agent(
     On by default; pass false only when the user does not want it.
     split: building campaigns only - take scenes of this split ("val", "test"). An agent
     gets its own copy of each scene, alongside anyone else labelling it.
-    operation_id: caller-generated UUID. Persist it before calling and reuse the same
-    request after a timeout/restart to recover the original agent and assignments.
+    If the response is lost, check list_agents before registering again; registration
+    requests are not deduplicated.
 
     Returns the agent (keep agent_id), the campaign context (guide, labels, form fields,
     imagery slices, basemaps, time series), the default views and agents_page, the URL to
@@ -343,7 +335,6 @@ async def register_agent(
                     "task_set_id": task_set_id,
                     "takes_over_work": takes_over_work,
                     "split": split,
-                    "operation_id": operation_id,
                 }
             ),
         )
@@ -561,14 +552,14 @@ async def draw_buildings(
     task_id: int,
     image: int,
     buildings: list[BuildingSketch],
-    operation_id: str | None = None,
     render_id: str | None = None,
 ) -> str:
     """Building campaigns: add buildings to the current scene, traced on one of the images
     returned for it (render_id required; image: its 1-based position). Trace each building
     using the campaign's footprint semantics, in image pixels inside the red scene outline.
     All buildings of one call are saved together or not at all.
-    Returns your buildings in the scene with their ids."""
+    Returns your buildings in the scene with their ids. After an uncertain response,
+    call open_scene before another write; resending creates additional buildings."""
     task = _current_scene(agent_id, task_id)
     meta = _render_meta(agent_id, task_id, image, render_id)
     try:
@@ -584,7 +575,7 @@ async def draw_buildings(
     result = await _api(
         _http().post,
         f"/agents/{agent_id}/tasks/{task_id}/buildings",
-        _without_none({"buildings": body, "operation_id": operation_id, "render_id": render_id}),
+        {"buildings": body},
     )
     return _with_buildings(task, result)
 
@@ -598,12 +589,11 @@ async def edit_building(
     render_id: str,
     pixels: list[list[float]],
     confidence: int,
-    operation_id: str | None = None,
     holes: list[list[list[float]]] | None = None,
 ) -> str:
     """Replace an owned polygon in place, retaining its building ID.
     Pixels refer to render_id, not the latest image. Reopens a finished scene;
-    handed-in work stays locked. Persist operation_id for an ambiguous-write retry."""
+    handed-in work stays locked. Read open_scene after an uncertain response."""
     task = _current_scene(agent_id, task_id)
     meta = _render_meta(agent_id, task_id, image, render_id)
     try:
@@ -613,29 +603,20 @@ async def edit_building(
     result = await _api(
         _http().patch,
         f"/agents/{agent_id}/tasks/{task_id}/buildings/{building_id}",
-        _without_none(
-            {
-                "geometry_wkt": geometry,
-                "confidence": confidence,
-                "render_id": render_id,
-                "operation_id": operation_id,
-            }
-        ),
+        {"geometry_wkt": geometry, "confidence": confidence},
     )
     return _with_buildings(task, result)
 
 
 @server.tool(structured_output=False)
-async def delete_buildings(
-    agent_id: str, task_id: int, building_ids: list[int], operation_id: str | None = None
-) -> str:
+async def delete_buildings(agent_id: str, task_id: int, building_ids: list[int]) -> str:
     """Building campaigns: delete some of your buildings in the current scene, to redraw
     them or to mark the scene empty. Returns the buildings left."""
     task = _current_scene(agent_id, task_id)
     result = await _api(
         _http().post,
         f"/agents/{agent_id}/tasks/{task_id}/buildings/delete",
-        _without_none({"building_ids": building_ids, "operation_id": operation_id}),
+        {"building_ids": building_ids},
     )
     return _with_buildings(task, result)
 
@@ -646,7 +627,6 @@ async def finish_scene(
     task_id: int,
     outcome: Literal["complete", "empty"],
     comment: str,
-    operation_id: str | None = None,
     render_id: str | None = None,
     image: int = 1,
 ) -> str:
@@ -662,30 +642,17 @@ async def finish_scene(
     result = await _api(
         _http().post,
         f"/agents/{agent_id}/tasks/{task_id}/outcome",
-        _without_none(
-            {
-                "outcome": outcome,
-                "comment": comment,
-                "operation_id": operation_id,
-                "render_id": render_id,
-            }
-        ),
+        {"outcome": outcome, "comment": comment},
     )
     _current_tasks.pop(agent_id, None)
     return _json(result)
 
 
 @server.tool(structured_output=False)
-async def hand_in(agent_id: str, operation_id: str | None = None) -> str:
+async def hand_in(agent_id: str) -> str:
     """Building campaigns: hand in once every assigned scene is complete or empty (skipped
     ones block it). Returns the agent's scene counts."""
-    return _json(
-        await _api(
-            _http().post,
-            f"/agents/{agent_id}/buildings/hand-in",
-            _without_none({"operation_id": operation_id}),
-        )
-    )
+    return _json(await _api(_http().post, f"/agents/{agent_id}/buildings/hand-in"))
 
 
 @server.tool(structured_output=False)

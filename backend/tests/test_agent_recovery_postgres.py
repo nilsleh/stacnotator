@@ -1,9 +1,7 @@
 """Run with RUN_POSTGRES_TESTS=1; uses isolated schemas, never existing campaign data."""
 
 import os
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -15,16 +13,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateSchema, DropSchema
 
 from src.agents import buildings, credentials, router, service
-from src.agents.models import AgentCredential, AgentOperation, AgentRender, LabellingAgent
+from src.agents.models import AgentCredential, LabellingAgent
 from src.agents.schemas import (
     AgentAnnotate,
     AgentBuilding,
-    AgentBuildingEdit,
     AgentBuildingsCreate,
     AgentBuildingsDelete,
-    AgentOperationRequest,
     AgentRegister,
-    AgentRenderCreate,
     AgentSceneOutcome,
 )
 from src.annotation.models import Annotation, AnnotationGeometry, AnnotationTask
@@ -126,65 +121,43 @@ def draw(engine, setup, agent_id, body):
         return router.draw_agent_buildings(agent_id, tasks[0], body, db, db.get(User, owner_id))
 
 
-def sketch(**kwargs):
+def sketch():
     return AgentBuildingsCreate(
         buildings=[AgentBuilding(geometry_wkt=box(0.001, 0.001, 0.002, 0.002).wkt, confidence=4)],
-        **kwargs,
     )
 
 
-def concurrent(action):
-    barrier = Barrier(2)
-
-    def run():
-        barrier.wait(timeout=10)
-        return action()
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(run) for _ in range(2)]
-        return [f.result(timeout=30) for f in futures]
-
-
-def test_concurrent_registration_and_ambiguous_building_write(engine, setup):
-    body = AgentRegister(name="recovery", task_count=2, operation_id=uuid4())
-    a, b = concurrent(lambda: register(engine, setup, body))
-    assert a == b
-    assert a.assigned == 2
-    create = sketch(operation_id=uuid4())
-    first, second = concurrent(lambda: draw(engine, setup, a.agent_id, create))
-    assert first == second
-    assert len(first) == 1
-    # New request/session after the response is lost: same stored result, same UUID and IDs.
-    assert register(engine, setup, body) == a
-    assert draw(engine, setup, a.agent_id, create) == first
-    with pytest.raises(HTTPException, match="payload mismatch"):
-        register(engine, setup, body.model_copy(update={"task_count": 1}))
-    changed = sketch(operation_id=create.operation_id)
-    changed.buildings[0].confidence = 2
-    with pytest.raises(HTTPException, match="payload mismatch"):
-        draw(engine, setup, a.agent_id, changed)
+def test_saved_registration_and_buildings_can_be_reconciled_in_a_new_session(engine, setup):
+    agent = register(engine, setup, AgentRegister(name="recovery", task_count=2))
+    drawn = draw(engine, setup, agent.agent_id, sketch())
     with Session(engine) as db:
-        assert (
-            db.scalar(
-                select(func.count())
-                .select_from(Annotation)
-                .where(Annotation.created_by_user_id == a.agent_id)
-            )
-            == 1
-        )
+        owner = db.get(User, setup[0])
+        overview = router.list_agents(db, owner, db.get(Campaign, setup[1]))
+        assert [a.agent_id for a in overview.agents] == [agent.agent_id]
+        assert overview.agents[0].assigned == 2
+        scene = router.get_agent_scene(agent.agent_id, setup[2][0], db, owner)
+        assert scene.task.buildings == drawn
+        assert scene.progress.state == "draft"
 
 
-def test_registration_assignment_failure_rolls_back_agent_and_receipt(engine, setup, monkeypatch):
-    original = buildings.assign_scenes
-    body = AgentRegister(name="rollback", operation_id=uuid4())
+@pytest.mark.parametrize("building_campaign", [True, False])
+def test_registration_assignment_failure_rolls_back(engine, setup, monkeypatch, building_campaign):
+    module = buildings if building_campaign else service
+    function = "assign_scenes" if building_campaign else "assign_tasks"
+    original = getattr(module, function)
+    body = AgentRegister(name="rollback")
+    if not building_campaign:
+        with Session(engine) as db:
+            db.get(Campaign, setup[1]).settings.building_scenes = None
+            db.commit()
 
     def fail(*args):
         original(*args)
-        raise RuntimeError("lost assignment response")
+        raise RuntimeError("assignment failure")
 
     with monkeypatch.context() as patch:
-        patch.setattr(buildings, "assign_scenes", fail)
-        with pytest.raises(RuntimeError, match="lost assignment"):
+        patch.setattr(module, function, fail)
+        with pytest.raises(RuntimeError, match="assignment failure"):
             register(engine, setup, body)
     with Session(engine) as db:
         assert (
@@ -195,13 +168,26 @@ def test_registration_assignment_failure_rolls_back_agent_and_receipt(engine, se
             )
             == 0
         )
-        assert (
-            db.scalar(
-                select(AgentOperation).where(AgentOperation.operation_id == body.operation_id)
-            )
-            is None
-        )
     assert register(engine, setup, body).assigned == 2
+
+
+def test_campaign_assignment_route_commits(engine, setup):
+    from src.campaigns import router as campaign_router
+    from src.campaigns.schemas import AssignTasksToUsersRequest
+
+    agent = register(engine, setup, AgentRegister(name="assignment", task_count=0))
+    with Session(engine) as db:
+        result = campaign_router.assign_tasks_to_users(
+            setup[1],
+            AssignTasksToUsersRequest(
+                strategy="fixed_per_user", user_task_counts={agent.agent_id: 1}
+            ),
+            db,
+            db.get(Campaign, setup[1]),
+        )
+        assert result.total_assigned == 1
+    with Session(engine) as db:
+        assert router.get_agent(agent.agent_id, db, db.get(User, setup[0])).assigned == 1
 
 
 def test_scene_resume_progress_and_hand_in_locks(engine, setup):
@@ -242,28 +228,27 @@ def test_scene_resume_progress_and_hand_in_locks(engine, setup):
             db,
             owner,
         )
-        result = router.hand_in_agent_buildings(
-            agent.agent_id, AgentOperationRequest(operation_id=uuid4()), db, owner
-        )
+        result = router.hand_in_agent_buildings(agent.agent_id, db, owner)
         assert result.hand_in.handed_in_at is not None
     with pytest.raises(HTTPException, match="hand"):
         draw(engine, setup, agent.agent_id, sketch())
 
 
-def test_delete_retry_and_authorization(engine, setup):
+def test_delete_and_reconcile_with_ownership_checks(engine, setup):
     agent = register(engine, setup, AgentRegister(name="delete", task_count=1))
     first = draw(engine, setup, agent.agent_id, sketch())
-    body = AgentBuildingsDelete(building_ids=[first[0].building_id], operation_id=uuid4())
+    body = AgentBuildingsDelete(building_ids=[first[0].building_id])
     with Session(engine) as db:
         owner = db.get(User, setup[0])
         assert router.delete_agent_buildings(agent.agent_id, setup[2][0], body, db, owner) == []
     later = draw(engine, setup, agent.agent_id, sketch())
     with Session(engine) as db:
         owner = db.get(User, setup[0])
-        assert router.delete_agent_buildings(agent.agent_id, setup[2][0], body, db, owner) == []
         assert (
             router.get_agent_scene(agent.agent_id, setup[2][0], db, owner).task.buildings == later
         )
+        with pytest.raises(HTTPException, match="Not this agent"):
+            router.delete_agent_buildings(agent.agent_id, setup[2][0], body, db, owner)
         with pytest.raises(HTTPException, match="not assigned"):
             router.get_agent_scene(agent.agent_id, setup[2][1], db, owner)
         stranger = User(id=uuid4())
@@ -277,34 +262,6 @@ def test_unassigned_agent_does_not_inherit_all_scenes(engine, setup):
         result = router.agent_building_progress(agent.agent_id, db, db.get(User, setup[0]))
         assert result.scenes == []
         assert not result.hand_in.can_hand_in
-
-
-def test_render_references_are_scoped_expiring_and_replayable(engine, setup):
-    a = register(engine, setup, AgentRegister(name="render", task_count=2))
-    b = register(engine, setup, AgentRegister(name="other", task_count=2))
-    with Session(engine) as db:
-        owner = db.get(User, setup[0])
-        ref = router.register_agent_render(
-            a.agent_id,
-            setup[2][0],
-            AgentRenderCreate(image_sha256="a" * 64, metadata={"task": {"task_id": setup[2][0]}}),
-            db,
-            owner,
-        )
-    body = sketch(render_id=ref.render_id, operation_id=uuid4())
-    result = draw(engine, setup, a.agent_id, body)
-    with pytest.raises(HTTPException, match="render ID"):
-        draw(engine, setup, b.agent_id, body)
-    with Session(engine) as db:
-        owner = db.get(User, setup[0])
-        with pytest.raises(HTTPException, match="render ID"):
-            router.draw_agent_buildings(a.agent_id, setup[2][1], body, db, owner)
-        record = db.get(AgentRender, ref.render_id)
-        record.expires_at = datetime.now(UTC) - timedelta(seconds=1)
-        db.commit()
-    with pytest.raises(HTTPException, match="render ID"):
-        draw(engine, setup, a.agent_id, sketch(render_id=ref.render_id))
-    assert draw(engine, setup, a.agent_id, body) == result
 
 
 def test_execution_credential_http_boundaries_and_lifecycle(engine, setup, monkeypatch):
@@ -351,7 +308,7 @@ def test_execution_credential_http_boundaries_and_lifecycle(engine, setup, monke
     claims = verify(client.cookies["tiler_token"])
     assert claims["campaigns"] == [str(cid)]
     assert cookie.json()["expires_in"] <= 60
-    create = sketch(operation_id=uuid4()).model_dump(mode="json")
+    create = sketch().model_dump(mode="json")
     response = client.post(f"/api/agents/{aid}/tasks/{tid}/buildings", json=create)
     assert response.status_code == 200, response.text
     assert len(response.json()) == 1
@@ -361,54 +318,8 @@ def test_execution_credential_http_boundaries_and_lifecycle(engine, setup, monke
     )
     assert (
         client.post(
-            f"/api/agents/{aid}/tasks/{tid}/outcome", json={"outcome": "complete"}
-        ).status_code
-        == 409
-    )
-    render_body = {
-        "image_sha256": "a" * 64,
-        "metadata": {
-            "task": {"task_id": tid},
-            "status": "ready",
-            "cells": [{"kind": "imagery", "status": "ready"}],
-        },
-    }
-    for cells in [None, {}, [None]]:
-        assert (
-            client.post(
-                f"/api/agents/{aid}/tasks/{tid}/renders",
-                json={**render_body, "metadata": {**render_body["metadata"], "cells": cells}},
-            ).status_code
-            == 422
-        )
-    for status, cells in [
-        ("partial", [{"kind": "imagery", "status": "partial"}]),
-        ("ready", [{"kind": "timeseries", "status": "ready"}]),
-        ("failed", []),
-    ]:
-        failed = client.post(
-            f"/api/agents/{aid}/tasks/{tid}/renders",
-            json={
-                **render_body,
-                "metadata": {**render_body["metadata"], "status": status, "cells": cells},
-            },
-        )
-        assert failed.status_code == 200, failed.text
-        assert (
-            client.post(
-                f"/api/agents/{aid}/tasks/{tid}/outcome",
-                json={"outcome": "complete", "render_id": failed.json()["render_id"]},
-            ).status_code
-            == 409
-        )
-    render = client.post(
-        f"/api/agents/{aid}/tasks/{tid}/renders",
-        json=render_body,
-    ).json()
-    assert (
-        client.post(
             f"/api/agents/{aid}/tasks/{tid}/outcome",
-            json={"outcome": "complete", "render_id": render["render_id"]},
+            json={"outcome": "complete"},
         ).status_code
         == 200
     )
@@ -429,10 +340,9 @@ def test_edit_keeps_identity_reopens_and_obeys_hand_in(engine, setup):
     agent = register(engine, setup, AgentRegister(name="edit", task_count=1))
     other = register(engine, setup, AgentRegister(name="foreign", task_count=1))
     (building,) = draw(engine, setup, agent.agent_id, sketch())
-    body = AgentBuildingEdit(
+    body = AgentBuilding(
         geometry_wkt=box(0.003, 0.003, 0.004, 0.004).wkt,
         confidence=5,
-        operation_id=uuid4(),
     )
     tid = setup[2][0]
     with Session(engine) as db:
@@ -446,22 +356,18 @@ def test_edit_keeps_identity_reopens_and_obeys_hand_in(engine, setup):
         assert result[0].building_id == building.building_id
         assert result[0].confidence == 5
         assert router.get_agent_scene(agent.agent_id, tid, db, owner).progress.state == "draft"
-        assert (
-            router.edit_agent_building(agent.agent_id, tid, building.building_id, body, db, owner)
-            == result
-        )
         with pytest.raises(HTTPException, match="not owned"):
             router.edit_agent_building(other.agent_id, tid, building.building_id, body, db, owner)
         router.set_agent_scene_outcome(
             agent.agent_id, tid, AgentSceneOutcome(outcome="complete"), db, owner
         )
-        router.hand_in_agent_buildings(agent.agent_id, None, db, owner)
+        router.hand_in_agent_buildings(agent.agent_id, db, owner)
         with pytest.raises(HTTPException, match="hand"):
             router.edit_agent_building(
                 agent.agent_id,
                 tid,
                 building.building_id,
-                body.model_copy(update={"operation_id": uuid4()}),
+                body,
                 db,
                 owner,
             )

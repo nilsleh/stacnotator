@@ -3,6 +3,7 @@ import base64
 import json
 
 import pytest
+import requests
 import responses
 from mcp.server.mcpserver import Image
 from mcp.server.mcpserver.exceptions import ToolError
@@ -116,13 +117,6 @@ def test_empty_queue_does_not_claim_completion(browsers):
 
 
 @responses.activate
-def test_registration_forwards_caller_operation_id(browsers):
-    responses.post(f"{BASE}/api/campaigns/12/agents", json=AGENT_OUT)
-    asyncio.run(agent_mcp.register_agent(12, "retry", 1000, 1, operation_id=AGENT))
-    assert json.loads(responses.calls[0].request.body)["operation_id"] == AGENT
-
-
-@responses.activate
 def test_api_errors_reach_the_model_as_tool_errors(browsers):
     responses.post(
         f"{BASE}/api/agents/{AGENT}/tasks/9/annotate",
@@ -232,10 +226,10 @@ def test_draw_buildings_sends_the_traced_outline_as_coordinates(browsers):
     )
     drawn = [{"building_id": 41, "geometry_wkt": "POLYGON((...))", "confidence": 4}]
     responses.post(f"{BASE}/api/agents/{AGENT}/tasks/5/buildings", json=drawn)
-    responses.post(f"{BASE}/api/agents/{AGENT}/tasks/5/renders", json={"render_id": AGENT})
     browsers.meta = MAP_META
     asyncio.run(agent_mcp.set_image_limits(AGENT, 1000, 1.0))
-    asyncio.run(agent_mcp.next_task(AGENT))
+    text, _ = asyncio.run(agent_mcp.next_task(AGENT))
+    render_id = json.loads(text)["views"][1]["render_id"]
 
     with pytest.raises(ToolError, match="render_id"):
         asyncio.run(agent_mcp.draw_buildings(AGENT, 5, 3, []))
@@ -246,12 +240,13 @@ def test_draw_buildings_sends_the_traced_outline_as_coordinates(browsers):
                 5,
                 1,
                 [{"pixels": [[256, 256], [266, 256], [266, 266]], "confidence": 4}],
-                render_id=AGENT,
+                render_id=render_id,
             )
         )
     )
 
     body = json.loads(responses.calls[-1].request.body)
+    assert set(body) == {"buildings"}
     (building,) = body["buildings"]
     assert building["confidence"] == 4
     assert building["geometry_wkt"].startswith("POLYGON((30.000000000 1.500000000,")
@@ -265,7 +260,6 @@ def test_render_reference_is_immutable_and_not_the_latest_image(browsers):
     import hashlib
 
     responses.get(f"{BASE}/api/agents/{AGENT}", json=AGENT_OUT)
-    responses.post(f"{BASE}/api/agents/{AGENT}/tasks/5/renders", json={"render_id": "first"})
     rendered = [
         {
             "view": DEFAULT_VIEW,
@@ -276,9 +270,12 @@ def test_render_reference_is_immutable_and_not_the_latest_image(browsers):
     text, image = asyncio.run(agent_mcp._bundle(AGENT, {"task": SCENE}, rendered))
     entry = json.loads(text)["views"][0]
     assert entry["image_sha256"] == hashlib.sha256(image.data).hexdigest()
-    assert entry["render_id"] == "first"
-    snapshot = agent_mcp._render_refs["first"]["meta"]
+    render_id = entry["render_id"]
+    assert [call.request.method for call in responses.calls] == ["GET"]
+    snapshot = agent_mcp._render_refs[render_id]["meta"]
     rendered[0]["meta"] = {**MAP_META, "cells": []}
+    newer, _ = asyncio.run(agent_mcp._bundle(AGENT, {"task": SCENE}, rendered))
+    assert json.loads(newer)["views"][0]["render_id"] != render_id
     assert snapshot["cells"]
     agent_mcp._current_tasks[AGENT] = SCENE
     responses.post(f"{BASE}/api/agents/{AGENT}/tasks/5/buildings", json=[])
@@ -288,13 +285,48 @@ def test_render_reference_is_immutable_and_not_the_latest_image(browsers):
             5,
             1,
             [{"pixels": [[256, 256], [266, 256], [266, 266]], "confidence": 4}],
-            render_id="first",
+            render_id=render_id,
         )
     )
-    assert json.loads(responses.calls[-1].request.body)["render_id"] == "first"
+    assert set(json.loads(responses.calls[-1].request.body)) == {"buildings"}
     agent_mcp._render_refs.clear()
     with pytest.raises(ToolError, match="restart"):
-        asyncio.run(agent_mcp.draw_buildings(AGENT, 5, 1, [], render_id="first"))
+        asyncio.run(agent_mcp.draw_buildings(AGENT, 5, 1, [], render_id=render_id))
+
+
+@responses.activate
+def test_uncertain_building_write_is_not_retried_and_can_be_reconciled(browsers):
+    agent_mcp._current_tasks[AGENT] = {**SCENE, "buildings": []}
+    agent_mcp._render_refs["drawing"] = {
+        "agent_id": AGENT,
+        "task_id": 5,
+        "image": 1,
+        "meta": MAP_META,
+    }
+    responses.post(
+        f"{BASE}/api/agents/{AGENT}/tasks/5/buildings",
+        body=requests.exceptions.Timeout("Response lost after commit"),
+    )
+    with pytest.raises(requests.exceptions.Timeout):
+        asyncio.run(
+            agent_mcp.draw_buildings(
+                AGENT,
+                5,
+                1,
+                [{"pixels": [[256, 256], [266, 256], [266, 266]], "confidence": 4}],
+                render_id="drawing",
+            )
+        )
+    assert len(responses.calls) == 1
+    assert agent_mcp._current_tasks[AGENT]["buildings"] == []
+    saved = {**SCENE, "buildings": [{"building_id": 41, "confidence": 4}]}
+    responses.get(
+        f"{BASE}/api/agents/{AGENT}/tasks/5/scene",
+        json={"task": saved, "progress": {"state": "draft"}, "hand_in": {}},
+    )
+    asyncio.run(agent_mcp.open_scene(AGENT, 5))
+    assert agent_mcp._current_tasks[AGENT] == saved
+    assert [call.request.method for call in responses.calls] == ["POST", "GET"]
 
 
 def test_explicit_render_transform_round_trip_with_fractional_zoom_and_caption():
@@ -356,15 +388,13 @@ def test_edit_preserves_building_identity_and_converts_holes(browsers):
                 "edit",
                 [[256, 256], [286, 256], [286, 286], [256, 286]],
                 5,
-                operation_id=AGENT,
                 holes=[[[261, 261], [266, 261], [266, 266]]],
             )
         )
     )
     body = json.loads(responses.calls[0].request.body)
     assert body["geometry_wkt"].count("),(") == 1
-    assert body["render_id"] == "edit"
-    assert body["operation_id"] == AGENT
+    assert set(body) == {"geometry_wkt", "confidence"}
     assert result["buildings"] == [{"building_id": 41, "confidence": 5}]
     assert agent_mcp._current_tasks[AGENT]["buildings"] == result["buildings"]
 
@@ -425,7 +455,7 @@ def test_failed_imagery_cannot_be_traced_or_finished(browsers, status):
 
 
 @responses.activate
-def test_finish_scene_forwards_successful_render_reference(browsers):
+def test_finish_scene_checks_render_locally_and_sends_only_outcome(browsers):
     agent_mcp._current_tasks[AGENT] = SCENE
     agent_mcp._render_refs["ready"] = {
         "agent_id": AGENT,
@@ -440,14 +470,11 @@ def test_finish_scene_forwards_successful_render_reference(browsers):
             5,
             "empty",
             "No buildings",
-            operation_id=AGENT,
             render_id="ready",
         )
     )
     assert json.loads(responses.calls[0].request.body) == {
         "outcome": "empty",
         "comment": "No buildings",
-        "operation_id": AGENT,
-        "render_id": "ready",
     }
     assert AGENT not in agent_mcp._current_tasks
