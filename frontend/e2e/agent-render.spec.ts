@@ -14,22 +14,19 @@ test('scene-fit renders carry precise transforms, fresh edits and recoverable ti
       building_scenes: { building_label_id: 1, complete_label_id: 2, empty_label_id: 3 },
     },
   };
-  await page.route(
-    (url) => url.pathname.startsWith('/api/'),
-    async (route) => {
-      const path = new URL(route.request().url()).pathname;
-      if (path.endsWith('/detailed')) {
-        expect(route.request().headers().authorization).toBe('Bearer stac-agent-render-test');
-        await route.fulfill({ json: campaign });
-      } else if (path.endsWith('/me')) {
-        await route.fulfill({ json: MOCK_USER });
-      } else if (path.endsWith('/tiler-token')) {
-        await route.fulfill({ json: { expires_in: 60 } });
-      } else {
-        await route.fulfill({ status: 404, json: { detail: 'Unmocked API request' } });
-      }
+  await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/detailed')) {
+      expect(route.request().headers().authorization).toBe('Bearer stac-agent-render-test');
+      await route.fulfill({ json: campaign });
+    } else if (path.endsWith('/me')) {
+      await route.fulfill({ json: MOCK_USER });
+    } else if (path.endsWith('/tiler-token')) {
+      await route.fulfill({ json: { expires_in: 60 } });
+    } else {
+      await route.fulfill({ status: 404, json: { detail: 'Unmocked API request' } });
     }
-  );
+  });
   const tile = await page.evaluate(() => {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = 256;
@@ -47,7 +44,12 @@ test('scene-fit renders carry precise transforms, fresh edits and recoverable ti
       body: failTiles ? '' : Buffer.from(tile, 'base64'),
     });
   });
-  await page.goto('/agent-render?campaign=42');
+  await Promise.all([
+    page.waitForResponse(
+      (response) => new URL(response.url()).pathname === '/api/campaigns/42/detailed'
+    ),
+    page.goto('/agent-render?campaign=42'),
+  ]);
   await expect(page.getByText('Agent render page - ready')).toBeVisible();
 
   const render = (cellPx: number, edited = false) =>

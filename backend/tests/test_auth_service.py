@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from src.auth.constants import ROLE_ADMIN, TERMS_VERSION
 from src.auth.dependencies import (
@@ -291,7 +291,11 @@ class TestRequireAuthenticatedUser:
             patch("src.auth.dependencies.get_auth_provider", return_value=provider),
             pytest.raises(HTTPException) as exc_info,
         ):
-            asyncio.run(require_authenticated_user(request=MagicMock(), db=_mock_db()))
+            asyncio.run(
+                require_authenticated_user(
+                    request=Request({"type": "http", "headers": []}), db=_mock_db()
+                )
+            )
 
         assert exc_info.value.status_code == 403
         assert exc_info.value.detail == "email_not_verified"
@@ -303,11 +307,16 @@ class TestRequireAuthenticatedUser:
             patch("src.auth.dependencies.get_auth_provider", return_value=provider),
             pytest.raises(HTTPException) as exc_info,
         ):
-            asyncio.run(require_authenticated_user(request=MagicMock(), db=_mock_db()))
+            asyncio.run(
+                require_authenticated_user(
+                    request=Request({"type": "http", "headers": []}), db=_mock_db()
+                )
+            )
 
         assert exc_info.value.status_code == 401
 
-    def test_authenticated_user_is_registered_and_returned(self):
+    @pytest.mark.parametrize("authorization", [b"", b"Bearer owner-token"])
+    def test_authenticated_user_is_registered_and_returned(self, authorization):
         provider = self._provider(returns={"uid": "x", "email": "a@b.com"})
         user = _make_user()
 
@@ -315,7 +324,14 @@ class TestRequireAuthenticatedUser:
             patch("src.auth.dependencies.get_auth_provider", return_value=provider),
             patch("src.auth.dependencies.service.register_user", return_value=user) as register,
         ):
-            result = asyncio.run(require_authenticated_user(request=MagicMock(), db=_mock_db()))
+            result = asyncio.run(
+                require_authenticated_user(
+                    request=Request(
+                        {"type": "http", "headers": [(b"authorization", authorization)]}
+                    ),
+                    db=_mock_db(),
+                )
+            )
 
         assert result is user
         register.assert_called_once()

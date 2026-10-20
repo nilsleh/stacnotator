@@ -31,7 +31,9 @@ def test_agent_migrations_upgrade_backfill_and_downgrade(monkeypatch):
         connection.execute(text(f'CREATE DATABASE "{name}"'))
     try:
         monkeypatch.setattr(config, "get_settings", lambda: isolated_settings)
-        alembic = Config("alembic.ini")
+        # Avoid replacing pytest's logging configuration via Alembic's fileConfig.
+        alembic = Config()
+        alembic.set_main_option("script_location", "alembic")
         command.upgrade(alembic, "bb1buildings")
         with Session(engine) as db:
             owner = User(id=uuid4(), issuer="test", external_uid="migration", email="test@invalid")
