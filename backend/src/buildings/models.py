@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Identity, Integer, UniqueConstraint, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Identity, Integer, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.database import Base
@@ -31,3 +31,16 @@ class BuildingHandIn(Base):
     handed_in_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class BuildingSceneSource(Base):
+    """Trusted import provenance, never included in execution task/context responses."""
+
+    __tablename__ = "building_scene_sources"
+    __table_args__ = {"schema": "data"}
+
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("data.annotation_tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    source_chip_id: Mapped[str] = mapped_column(Text)
+    raster_metadata: Mapped[dict] = mapped_column(JSON)

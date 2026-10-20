@@ -9,13 +9,17 @@ import {
   Title,
 } from 'chart.js';
 import OlMap from 'ol/Map';
+import type Tile from 'ol/Tile';
+import TileState from 'ol/TileState';
 import View from 'ol/View';
 import GeoJSONFormat from 'ol/format/GeoJSON';
 import WKT from 'ol/format/WKT';
+import type Geometry from 'ol/geom/Geometry';
 import type BaseLayer from 'ol/layer/Base';
 import TileLayer from 'ol/layer/Tile';
 import { fromLonLat } from 'ol/proj';
 import type TileSource from 'ol/source/Tile';
+import type { TileSourceEvent } from 'ol/source/Tile';
 import type { CampaignOutFull } from '~/api/client';
 import { basemapAttribution, resolveBasemapUrl } from '~/shared/imagery/tileUrls';
 import { extractErrorMessage } from '~/shared/utils/errorHandler';
@@ -155,6 +159,8 @@ export async function renderView(input: RenderInput): Promise<RenderedImage> {
             ...place(rect),
             kind: kindOf(cell),
             label: 'no image',
+            status: 'failed',
+            error: extractErrorMessage(err, 'Rendering failed'),
             warning: err instanceof Error ? err.message : String(err),
           },
         })
@@ -164,7 +170,8 @@ export async function renderView(input: RenderInput): Promise<RenderedImage> {
 
   for (const { image, rect, meta, metersPerPixel: mpp } of cells) {
     if (meta.kind !== 'timeseries') drawNoData(ctx, rect);
-    if (image) ctx.drawImage(image, rect.x, rect.y);
+    const caption = meta.caption_height as number | undefined;
+    if (image) ctx.drawImage(image, rect.x, rect.y + (caption ?? 0));
     if (image && mpp && isPoint) {
       const sidePx = extentMeters ? extentMeters / mpp : 0;
       if (extentMeters) meta.inside_box = boxStats(image, sidePx);
@@ -176,6 +183,11 @@ export async function renderView(input: RenderInput): Promise<RenderedImage> {
   return {
     image_base64: await toBase64(canvas),
     meta: {
+      status: cells.every(
+        (c) => c.image && c.meta.status !== 'partial' && c.meta.status !== 'failed'
+      )
+        ? 'ready'
+        : 'partial',
       task: { task_id: task.task_id, lat: task.lat, lon: task.lon },
       size: [packed.width, packed.height],
       grid: { columns, cell_px: cellPx },
@@ -215,12 +227,22 @@ async function drawCell(
     return drawChart(cell, cell.timeseries_ids, rect, place, input);
   }
 
-  const zoom = cell.zoom ?? view.zoom ?? DEFAULT_ZOOM;
+  const requestedZoom = cell.zoom ?? view.zoom ?? DEFAULT_ZOOM;
+  const scene = campaign.settings.building_scenes
+    ? new WKT().readGeometry(task.geometry_wkt, {
+        dataProjection: 'EPSG:4326',
+        featureProjection: 'EPSG:3857',
+      })
+    : undefined;
+  const caption = scene ? labelHeight(rect) : 0;
   const layers: LayerSpec[] = [];
   let kind: CellMeta['kind'];
   let label: string;
   let details: Record<string, unknown>;
   if (cell.slice_id != null) {
+    if (task.imagery_slice_id != null && cell.slice_id !== task.imagery_slice_id) {
+      throw new Error('This imagery slice is not the source chip assigned to the scene');
+    }
     kind = 'imagery';
     const target = resolveSlice(catalog, cell.slice_id, cell.visualization ?? null);
     layers.push({ kind: 'raster', ...sliceRaster(catalog, target.address) });
@@ -252,14 +274,26 @@ async function drawCell(
   const drawn = ownBuildings(task);
   if (drawn) layers.push(drawn);
 
-  const mpp = metersPerPixel(task.lat, zoom);
-  const { image, tileErrors, complete } = await renderMap(
+  const rendered = await renderMap(
     stage,
     layers,
     [task.lon, task.lat],
-    zoom,
-    rect.width
+    requestedZoom,
+    rect.width,
+    rect.height - caption,
+    scene,
+    Boolean(scene && cell.zoom == null && (view.fit_scene ?? view.zoom == null))
   );
+  const { image, tileErrors, complete, zoom, center, resolution, coverage, pendingTiles } =
+    rendered;
+  const mpp = metersPerPixel(task.lat, zoom);
+  const missing = coverage ? coverage.missing_pixels > 0 : tileErrors > 0;
+  const status =
+    coverage && coverage.scene_pixels > 0 && coverage.missing_pixels === coverage.scene_pixels
+      ? 'failed'
+      : !complete || missing || coverage?.scene_pixels === 0
+        ? 'partial'
+        : 'ready';
   const warning = !complete
     ? 'tiles still missing when drawn: hatched areas are no data'
     : tileErrors
@@ -276,9 +310,25 @@ async function drawCell(
       ...details,
       zoom,
       m_per_px: Number(mpp.toFixed(2)),
+      status,
+      tile_errors: tileErrors,
+      pending_tiles: pendingTiles,
+      timed_out: !complete,
+      ...(coverage ? { coverage } : {}),
+      projection: 'EPSG:3857',
+      render_config: layers.filter((layer) => layer.kind === 'raster'),
+      pixel_to_map: [
+        resolution,
+        0,
+        center[0] - (rect.x + rect.width / 2) * resolution,
+        0,
+        -resolution,
+        center[1] + (rect.y + caption + image.height / 2) * resolution,
+      ],
+      ...(caption ? { caption_height: caption } : {}),
       // Where this cell sits in the image, centred on the task: what turns a pixel the
       // agent points at back into a coordinate.
-      rect: [rect.x, rect.y, rect.width, rect.height],
+      rect: [rect.x, rect.y + caption, rect.width, image.height],
       ...(warning ? { warning } : {}),
     },
   };
@@ -351,20 +401,33 @@ async function renderMap(
   specs: LayerSpec[],
   center: [number, number],
   zoom: number,
-  size: number
-): Promise<{ image: HTMLCanvasElement; tileErrors: number; complete: boolean }> {
+  width: number,
+  height: number,
+  scene?: Geometry,
+  fitScene = false
+) {
   const target = document.createElement('div');
-  target.style.width = `${size}px`;
-  target.style.height = `${size}px`;
+  target.style.width = `${width}px`;
+  target.style.height = `${height}px`;
   stage.appendChild(target);
 
   const layers = specs.map(createLayer);
   let tileErrors = 0;
-  const countError = () => (tileErrors += 1);
+  const loadingTiles = new Set<Tile>();
+  const countStart = (event: TileSourceEvent) => loadingTiles.add(event.tile);
+  const countEnd = (event: TileSourceEvent) => loadingTiles.delete(event.tile);
+  const countError = (event: TileSourceEvent) => {
+    tileErrors += 1;
+    loadingTiles.delete(event.tile);
+  };
   const tileSources = layers
     .map((layer) => (layer instanceof TileLayer ? (layer.getSource() as TileSource | null) : null))
     .filter((source): source is TileSource => source != null);
-  tileSources.forEach((source) => source.on('tileloaderror', countError));
+  tileSources.forEach((source) => {
+    source.on('tileloadstart', countStart);
+    source.on('tileloadend', countEnd);
+    source.on('tileloaderror', countError);
+  });
 
   const map = new OlMap({
     target,
@@ -374,6 +437,11 @@ async function renderMap(
     pixelRatio: 1,
     view: new View({ center: fromLonLat(center), zoom }),
   });
+  if (scene && fitScene) {
+    map
+      .getView()
+      .fit(scene.getExtent(), { size: [width, height], padding: [8, 8, 8, 8], maxZoom: 22 });
+  }
   const pump = setInterval(() => map.renderSync(), RENDER_PUMP_MS);
 
   try {
@@ -385,10 +453,37 @@ async function renderMap(
       });
       map.renderSync();
     });
-    return { image: composite(target, size), tileErrors, complete };
+    const image = composite(target, width, height);
+    let coverage: { scene_pixels: number; missing_pixels: number } | undefined;
+    if (scene) {
+      const rgba = image.getContext('2d')!.getImageData(0, 0, width, height).data;
+      coverage = { scene_pixels: 0, missing_pixels: 0 };
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (!scene.intersectsCoordinate(map.getCoordinateFromPixel([x + 0.5, y + 0.5]))) continue;
+          coverage.scene_pixels++;
+          if (rgba[(y * width + x) * 4 + 3] === 0) coverage.missing_pixels++;
+        }
+      }
+    }
+    return {
+      image,
+      tileErrors,
+      complete,
+      pendingTiles: [...loadingTiles].filter((tile) => tile.getState() === TileState.LOADING)
+        .length,
+      coverage,
+      zoom: map.getView().getZoom()!,
+      center: map.getView().getCenter()!,
+      resolution: map.getView().getResolution()!,
+    };
   } finally {
     clearInterval(pump);
-    tileSources.forEach((source) => source.un('tileloaderror', countError));
+    tileSources.forEach((source) => {
+      source.un('tileloadstart', countStart);
+      source.un('tileloadend', countEnd);
+      source.un('tileloaderror', countError);
+    });
     map.setTarget(undefined);
     layers.forEach((layer: BaseLayer) => destroyLayer(layer));
     target.remove();
@@ -396,10 +491,10 @@ async function renderMap(
 }
 
 /** Flattens a map's layer canvases into one, the way OpenLayers' own export example does. */
-function composite(target: HTMLElement, size: number): HTMLCanvasElement {
+function composite(target: HTMLElement, width: number, height: number): HTMLCanvasElement {
   const out = document.createElement('canvas');
-  out.width = size;
-  out.height = size;
+  out.width = width;
+  out.height = height;
   const ctx = out.getContext('2d', { willReadFrequently: true })!;
   for (const layerCanvas of target.querySelectorAll<HTMLCanvasElement>('.ol-layer canvas')) {
     if (layerCanvas.width === 0) continue;

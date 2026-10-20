@@ -198,4 +198,9 @@ def evaluate_scenes(
         empty_scenes_with_false_positives=empty_with_fp,
         empty_scene_fpr=empty_with_fp / empty if empty else 0.0,
         scenes=results,
+        status="evaluated" if results else "no_evidence",
+        assigned_count=len(scenes),
+        finished_count=len(scenes),
+        evaluated_count=len(scenes),
+        empty_scene_fpr_has_evidence=bool(empty),
     )

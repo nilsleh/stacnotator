@@ -62,6 +62,9 @@ def owner_role(db: Session, campaign: Campaign, user: User) -> Role:
 def get_agent(db: Session, agent_id: UUID, owner: User) -> tuple[LabellingAgent, Campaign, Role]:
     """The owner's agent and its campaign, checking the owner may still run it."""
     agent = db.get(LabellingAgent, agent_id)
+    if agent is not None and db.info.get("execution_agent_id") == agent_id:
+        campaign = require_campaign_access(agent.campaign_id, db, owner)
+        return agent, campaign, "member"
     if agent is None or agent.owner_user_id != owner.id:
         raise HTTPException(status_code=404, detail="Agent not found")
     campaign = require_campaign_access(agent.campaign_id, db, owner)
@@ -288,13 +291,19 @@ def _task_out(task: AnnotationTask) -> AgentTaskOut:
         lat=centroid.y,
         lon=centroid.x,
         geometry_wkt=shape.wkt,
+        imagery_slice_id=(task.raw_source_data or {}).get("slice_id"),
     )
 
 
 def next_tasks(db: Session, agent_id: UUID, owner: User) -> NextTasksOut:
     agent, campaign, _ = get_agent(db, agent_id, owner)
     upcoming = _upcoming_tasks(db, agent)
-    if not upcoming and agent.takes_over_work and _take_over_task(db, agent):
+    if (
+        not upcoming
+        and agent.takes_over_work
+        and db.info.get("execution_agent_id") is None
+        and _take_over_task(db, agent)
+    ):
         upcoming = _upcoming_tasks(db, agent)
     tasks = [_task_out(task) for task in upcoming]
     if agent_buildings.is_building_campaign(campaign):
@@ -391,6 +400,24 @@ def submit_annotation(
     db: Session, agent_id: UUID, owner: User, task_id: int, body: AgentAnnotate
 ) -> AnnotationTaskSubmitResponse:
     agent, campaign, _ = get_agent(db, agent_id, owner)
+    if db.info.get("execution_agent_id") is not None:
+        assigned = db.scalar(
+            select(AnnotationTaskAssignment.task_id)
+            .join(AnnotationTask)
+            .where(
+                AnnotationTaskAssignment.user_id == agent_id,
+                AnnotationTaskAssignment.task_id == task_id,
+                AnnotationTask.campaign_id == campaign.id,
+                ~AnnotationTaskAssignment.is_review,
+            )
+        )
+        if assigned is None:
+            raise HTTPException(status_code=404, detail="Task not assigned to this agent")
+        if agent_buildings.is_building_campaign(campaign) and body.label_id is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Use the scene outcome endpoint with a successful render ID",
+            )
     return annotation_service.submit_task_annotation(
         db=db, campaign=campaign, task_id=task_id, annotation_create=body, user_id=agent.user_id
     )

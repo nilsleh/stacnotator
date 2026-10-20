@@ -29,6 +29,11 @@ async def require_authenticated_user(
         HTTPException: 401 if authentication fails
         HTTPException: 403 if email is not verified
     """
+    from src.agents.credentials import authenticate, execution_token
+
+    token = execution_token(request)
+    if token is not None:
+        return authenticate(db, request, token)
     auth_provider = get_auth_provider()
     try:
         auth_user = await auth_provider.authenticate(request)
@@ -61,6 +66,10 @@ async def optional_user(
     try:
         return await require_authenticated_user(request, db)
     except HTTPException:
+        from src.agents.credentials import execution_token
+
+        if execution_token(request) is not None:
+            raise
         return None
 
 

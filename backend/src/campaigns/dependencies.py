@@ -46,6 +46,9 @@ def require_campaign_access(
     Raises:
         HTTPException: 404 if campaign not found, 403 if access denied
     """
+    execution_campaign = db.info.get("execution_campaign_id")
+    if isinstance(execution_campaign, int) and execution_campaign != campaign_id:
+        raise HTTPException(status_code=403, detail="Outside execution credential campaign")
     campaign = _get_campaign(db, campaign_id)
 
     membership = db.execute(

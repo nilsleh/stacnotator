@@ -1,13 +1,19 @@
+import json
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.annotation.schemas import AnnotationFromTaskCreate
+from src.buildings.schemas import HandInOut, SceneProgressOut
 
 
-class AgentRegister(BaseModel):
+class AgentOperationRequest(BaseModel):
+    operation_id: UUID | None = None
+
+
+class AgentRegister(AgentOperationRequest):
     name: str = Field(min_length=1, max_length=20, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
     description: str | None = Field(default=None, max_length=2000)
     task_count: int = Field(default=10, ge=0, le=1000)
@@ -21,7 +27,7 @@ class AgentUpdate(BaseModel):
     takes_over_work: bool
 
 
-class AgentAnnotate(AnnotationFromTaskCreate):
+class AgentAnnotate(AnnotationFromTaskCreate, AgentOperationRequest):
     comment: str | None = Field(default=None, max_length=5000)
 
 
@@ -51,17 +57,23 @@ class AgentBuilding(BaseModel):
     confidence: int
 
 
-class AgentBuildingsCreate(BaseModel):
+class AgentBuildingsCreate(AgentOperationRequest):
     buildings: list[AgentBuilding] = Field(min_length=1, max_length=500)
+    render_id: UUID | None = None
 
 
-class AgentBuildingsDelete(BaseModel):
+class AgentBuildingsDelete(AgentOperationRequest):
     building_ids: list[int] = Field(min_length=1, max_length=500)
 
 
-class AgentSceneOutcome(BaseModel):
+class AgentBuildingEdit(AgentOperationRequest, AgentBuilding):
+    render_id: UUID | None = None
+
+
+class AgentSceneOutcome(AgentOperationRequest):
     outcome: Literal["complete", "empty"]
     comment: str | None = Field(default=None, max_length=5000)
+    render_id: UUID | None = None
 
 
 class AgentTaskOut(BaseModel):
@@ -70,6 +82,7 @@ class AgentTaskOut(BaseModel):
     lat: float
     lon: float
     geometry_wkt: str
+    imagery_slice_id: int | None = None
     # Building campaigns: the agent's own buildings in this scene so far.
     buildings: list[AgentBuildingOut] | None = None
 
@@ -78,8 +91,44 @@ class NextTasksOut(BaseModel):
     campaign_id: int
     remaining: int
     # The first is the task to label now, the rest come after it so the caller can draw
-    # them ahead. Empty once everything assigned is done.
+    # them ahead. Empty means the queue is empty, not that skipped scenes are finished.
     tasks: list[AgentTaskOut]
+
+
+class AgentSceneOut(BaseModel):
+    task: AgentTaskOut
+    progress: SceneProgressOut
+    hand_in: HandInOut
+
+
+class AgentRenderCreate(BaseModel):
+    image_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    metadata: dict[str, Any]
+
+    @field_validator("metadata")
+    @classmethod
+    def bounded_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(value, allow_nan=False)) > 200_000:
+            raise ValueError("Render metadata exceeds 200 KB")
+        cells = value.get("cells", [])
+        if not isinstance(cells, list) or any(not isinstance(cell, dict) for cell in cells):
+            raise ValueError("Render cells must be a list of metadata objects")
+        return value
+
+
+class AgentRenderOut(BaseModel):
+    render_id: UUID
+    expires_at: datetime
+
+
+class AgentCredentialCreate(BaseModel):
+    expires_in: int = Field(default=3600, ge=60, le=86400)
+
+
+class AgentCredentialOut(BaseModel):
+    credential_id: UUID
+    token: str
+    expires_at: datetime
 
 
 class AgentsOverviewOut(BaseModel):

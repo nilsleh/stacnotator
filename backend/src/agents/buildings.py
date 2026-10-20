@@ -13,14 +13,23 @@ from geoalchemy2.shape import to_shape
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from src.agents import renders
 from src.agents.models import LabellingAgent
-from src.agents.schemas import AgentBuildingOut, AgentBuildingsCreate, AgentSceneOutcome
+from src.agents.schemas import (
+    AgentBuildingEdit,
+    AgentBuildingOut,
+    AgentBuildingsCreate,
+    AgentSceneOut,
+    AgentSceneOutcome,
+    AgentTaskOut,
+)
 from src.annotation import service as annotation_service
 from src.annotation.models import AnnotationTask, AnnotationTaskAssignment
 from src.annotation.schemas import (
     AnnotationCreate,
     AnnotationFromTaskCreate,
     AnnotationTaskSubmitResponse,
+    AnnotationUpdate,
 )
 from src.buildings import lifecycle
 from src.buildings import service as buildings_service
@@ -64,6 +73,8 @@ def draw(
     db: Session, agent: LabellingAgent, campaign: Campaign, task_id: int, body: AgentBuildingsCreate
 ) -> list[AgentBuildingOut]:
     _require_scene(db, agent, campaign, task_id)
+    if body.render_id is not None:
+        renders.validate(db, body.render_id, agent.user_id, task_id)
     cfg = lifecycle.require_building_campaign(campaign)
     annotation_service.create_annotations_bulk(
         db,
@@ -97,10 +108,46 @@ def delete(
     return buildings_out(db, campaign, task_id, agent.user_id)
 
 
+def edit(
+    db: Session,
+    agent: LabellingAgent,
+    campaign: Campaign,
+    task_id: int,
+    building_id: int,
+    body: AgentBuildingEdit,
+) -> list[AgentBuildingOut]:
+    _require_scene(db, agent, campaign, task_id)
+    if body.render_id is not None:
+        renders.validate(db, body.render_id, agent.user_id, task_id)
+    own = {b.building_id for b in buildings_out(db, campaign, task_id, agent.user_id)}
+    if building_id not in own:
+        raise HTTPException(
+            status_code=404, detail="Building not owned by this agent in this scene"
+        )
+    annotation_service.update_annotation(
+        db,
+        building_id,
+        AnnotationUpdate(
+            label_id=None,
+            comment=None,
+            is_authoritative=None,
+            geometry_wkt=body.geometry_wkt,
+            confidence=body.confidence,
+        ),
+        agent.user_id,
+        campaign,
+    )
+    return buildings_out(db, campaign, task_id, agent.user_id)
+
+
 def set_outcome(
     db: Session, agent: LabellingAgent, campaign: Campaign, task_id: int, body: AgentSceneOutcome
 ) -> AnnotationTaskSubmitResponse:
     _require_scene(db, agent, campaign, task_id)
+    if body.render_id is None and db.info.get("execution_agent_id") is not None:
+        raise HTTPException(status_code=409, detail="Execution scene outcome requires a render ID")
+    if body.render_id is not None:
+        renders.validate(db, body.render_id, agent.user_id, task_id, require_ready=True)
     cfg = lifecycle.require_building_campaign(campaign)
     label_id = cfg.complete_label_id if body.outcome == "complete" else cfg.empty_label_id
     return annotation_service.submit_task_annotation(
@@ -114,6 +161,26 @@ def set_outcome(
 
 def hand_in(db: Session, agent: LabellingAgent, campaign: Campaign) -> BuildingProgressOut:
     return buildings_service.hand_in(db, campaign, agent.user_id)
+
+
+def scene(db: Session, agent: LabellingAgent, campaign: Campaign, task_id: int) -> AgentSceneOut:
+    _require_scene(db, agent, campaign, task_id)
+    task = db.scalars(_assigned(agent).where(AnnotationTask.id == task_id)).one()
+    shape = to_shape(task.geometry.geometry)
+    progress = buildings_service.progress(db, campaign, agent.user_id)
+    return AgentSceneOut(
+        task=AgentTaskOut(
+            task_id=task.id,
+            annotation_number=task.annotation_number,
+            lat=shape.centroid.y,
+            lon=shape.centroid.x,
+            geometry_wkt=shape.wkt,
+            imagery_slice_id=(task.raw_source_data or {}).get("slice_id"),
+            buildings=buildings_out(db, campaign, task_id, agent.user_id),
+        ),
+        progress=next(s for s in progress.scenes if s.task_id == task_id),
+        hand_in=progress.hand_in,
+    )
 
 
 def assign_scenes(db: Session, agent: LabellingAgent, count: int, split: str | None) -> int:

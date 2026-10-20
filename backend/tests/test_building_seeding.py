@@ -97,6 +97,24 @@ def test_chips_without_slices_are_mosaicked_into_one_slice():
     assert only.tifs == ("t/a.tif", "t/b.tif")
 
 
+def test_strict_chip_imagery_never_mosaics_another_acquisition():
+    (source,) = seeding.plan_sources(_dataset(scene_imagery="per_chip"))
+    assert [sl.tifs for sl in source.slices] == [("t/a.tif",), ("t/b.tif",)]
+    assert [sl.name for sl in source.slices] == ["Scene 1", "Scene 2"]
+
+
+@pytest.mark.parametrize("params", ["rescale=0,nan", "rescale=-inf,1", "bidx=0", "nodata=inf"])
+def test_invalid_render_ranges_are_rejected(params):
+    with pytest.raises(ValueError):
+        seeding.parse_tiler_params(params)
+
+
+def test_nodata_override_reuses_existing_tile_url_builder():
+    from src.tilers.providers import build_viz_query_string
+
+    assert "nodata=0" in build_viz_query_string(seeding.parse_tiler_params("bidx=1&nodata=0"))
+
+
 def test_dataset_slices_become_time_slices_and_secondary_becomes_a_source():
     ds = _dataset(
         slices=[
@@ -162,6 +180,26 @@ def test_scenes_carry_only_their_split():
     assert a.raw_source_data == b.raw_source_data == {"split": "val"}
     assert (len(a.references), len(b.references)) == (1, 0)
     assert a.cell.bounds == (10.0, 20.0, 10.01, 20.01)
+
+
+def test_polygon_policy_preserves_holes_and_rejects_multipart_references():
+    ds = _dataset(geometry_policy="polygon-v1")
+    outer = _square(10.002, 20.002, 0.005)
+    outer["coordinates"].append(_square(10.003, 20.003, 0.001)["coordinates"][0])
+    geojsons = {"t/a.geojson": _fc(outer), "t/b.geojson": _fc()}
+    assert len(seeding.plan_scenes(ds, geojsons)[0].references[0].interiors) == 1
+    geojsons["t/a.geojson"] = _fc(
+        {
+            "type": "MultiPolygon",
+            "coordinates": [
+                _square(10.002, 20.002, 0.001)["coordinates"],
+                _square(10.006, 20.006, 0.001)["coordinates"],
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="multipart"):
+        seeding.plan_scenes(ds, geojsons)
+    assert len(seeding.plan_scenes(_dataset(), geojsons)[0].references[0].geoms) == 2
 
 
 def test_item_id_matches_the_tilers_register_cog():

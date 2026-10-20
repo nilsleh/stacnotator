@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ from src.annotation.models import (
 )
 from src.auth.models import User
 from src.buildings.config import BuildingScenes
+from src.buildings.models import BuildingSceneSource
 from src.campaigns.models import Campaign, TaskSet
 from src.campaigns.schemas import CampaignSettingsCreate, LabelBase
 from src.campaigns.service import create_campaign, delete_campaign
@@ -135,14 +137,22 @@ def parse_tiler_params(params: str) -> dict:
     """
     bidx: list[int] = []
     rescales: list[str] = []
+    nodata: str | None = None
     for key, value in parse_qsl(params, strict_parsing=True):
         if key == "bidx":
-            bidx.append(int(value))
+            band = int(value)
+            if band < 1:
+                raise ValueError("Band indices must be positive")
+            bidx.append(band)
         elif key == "rescale":
             lo, hi = (float(v) for v in value.split(","))
-            if hi <= lo:
+            if not math.isfinite(lo) or not math.isfinite(hi) or hi <= lo:
                 raise ValueError(f"rescale must be low,high: {value!r}")
             rescales.append(value)
+        elif key == "nodata":
+            if value.lower() != "nan" and not math.isfinite(float(value)):
+                raise ValueError("nodata must be finite or nan")
+            nodata = value
         else:
             raise ValueError(f"unsupported tiler param {key!r}")
     if len(rescales) > 1 and len(rescales) != len(bidx):
@@ -152,6 +162,8 @@ def parse_tiler_params(params: str) -> dict:
         viz["bidx"] = bidx
     if rescales:
         viz["rescale"] = rescales[0] if len(rescales) == 1 else rescales
+    if nodata is not None:
+        viz["nodata"] = nodata
     return viz
 
 
@@ -171,6 +183,11 @@ def plan_sources(dataset: dict) -> list[SourceSpec]:
         slices = tuple(
             SliceSpec(s["name"], s["start_date"], s["end_date"], (s["tif"],))
             for s in dataset["slices"]
+        )
+    elif dataset.get("scene_imagery") == "per_chip":
+        slices = tuple(
+            SliceSpec(f"Scene {i}", "2020-01-01", "2020-12-31", (c["tif"],))
+            for i, c in enumerate(dataset["chips"], start=1)
         )
     else:
         slices = (_all_chips(tuple(c["tif"] for c in dataset["chips"])),)
@@ -253,8 +270,14 @@ def plan_scenes(dataset: dict, geojsons: dict[str, dict]) -> list[SceneSpec]:
     """
     scenes = []
     for chip in dataset["chips"]:
-        cell = box(*chip["bbox"])
+        cell = shape(chip["footprint"]) if chip.get("footprint") else box(*chip["bbox"])
+        if not isinstance(cell, Polygon) or cell.is_empty or not cell.is_valid:
+            raise ValueError("Scene footprint must be a valid nonempty Polygon")
         references = normalize_references(geojsons[chip["geojson"]], cell)
+        if dataset.get("geometry_policy") == "polygon-v1" and any(
+            not isinstance(ref, Polygon) for ref in references
+        ):
+            raise ValueError("polygon-v1 does not support multipart reference buildings")
         raw = {"split": chip.get("split")}
         if chip.get("slice_id"):
             raw["slice_id"] = chip["slice_id"]
@@ -369,14 +392,17 @@ def _campaigns_named(db: Session, project_id: int, name: str) -> list[Campaign]:
 
 
 def _insert_references(
-    db: Session, campaign_id: int, user_id: UUID, scenes: list[SceneSpec]
+    db: Session, campaign_id: int, user_id: UUID, scenes: list[SceneSpec], task_ids: list[int]
 ) -> int:
     """Reference footprints as standalone annotations, each with its own ``source_id``.
 
     They carry no task and no ``origin_task_id``, so they never join a scene's buildings
     or count toward completion; ``source_id`` (unique per campaign) marks them as imported.
     """
-    geoms = [g for scene in scenes for g in scene.references]
+    linked = [
+        (tid, g) for tid, scene in zip(task_ids, scenes, strict=True) for g in scene.references
+    ]
+    geoms = [g for _, g in linked]
     if not geoms:
         return 0
     geometry_ids = db.scalars(
@@ -392,6 +418,7 @@ def _insert_references(
                 "created_by_user_id": user_id,
                 "label_id": BUILDING_SCENES.building_label_id,
                 "source_id": source_id,
+                "reference_task_id": linked[source_id - 1][0],
             }
             for source_id, gid in enumerate(geometry_ids, start=1)
         ],
@@ -426,7 +453,13 @@ def _create_campaign(
     )
     campaign_id = campaign.id
     BUILDING_SCENES.check_labels(campaign.settings.labels)
-    campaign.settings.building_scenes = BUILDING_SCENES.model_dump()
+    campaign.settings.building_scenes = BuildingScenes(
+        **{
+            **BUILDING_SCENES.model_dump(),
+            "geometry_policy": dataset.get("geometry_policy", "legacy-v1"),
+            "footprint_semantics": dataset.get("footprint_semantics", "source-native"),
+        }
+    ).model_dump()
     # The tiler calls take minutes; don't sit idle in a transaction meanwhile.
     db.commit()
     try:
@@ -464,11 +497,37 @@ def _create_campaign(
             .where(AnnotationTask.campaign_id == campaign_id)
             .order_by(AnnotationTask.annotation_number)
         ).all()
+        if len(task_ids) != len(scenes):
+            raise ValueError("Imported scene/task count mismatch")
+        slice_ids = {
+            sl.name: sl.id
+            for source in campaign.imagery_sources[:1]
+            for collection in source.collections
+            for sl in collection.slices
+        }
+        for i, (tid, scene, chip) in enumerate(
+            zip(task_ids, scenes, dataset["chips"], strict=True), start=1
+        ):
+            db.add(
+                BuildingSceneSource(
+                    task_id=tid,
+                    source_chip_id=scene.chip_id,
+                    raster_metadata={"tif": chip["tif"], **chip.get("raster_metadata", {})},
+                )
+            )
+            if dataset.get("scene_imagery") == "per_chip":
+                task = db.get(AnnotationTask, tid)
+                if task is None:
+                    raise ValueError("Imported task missing")
+                task.raw_source_data = {
+                    **scene.raw_source_data,
+                    "slice_id": slice_ids[f"Scene {i}"],
+                }
         db.execute(
             insert(AnnotationTaskAssignment),
             [{"task_id": tid, "user_id": user_id} for tid in task_ids],
         )
-        _insert_references(db, campaign_id, user_id, scenes)
+        _insert_references(db, campaign_id, user_id, scenes, list(task_ids))
         db.commit()
     except BaseException:
         db.rollback()

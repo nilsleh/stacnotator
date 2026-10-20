@@ -53,7 +53,12 @@ def verify(token: str) -> dict:
 
 
 def set_tiler_cookie(
-    response: Response, *, sub: str, campaigns: list, visualizer_id: int | None = None
+    response: Response,
+    *,
+    sub: str,
+    campaigns: list,
+    visualizer_id: int | None = None,
+    ttl: int = TILER_TOKEN_TTL,
 ) -> None:
     """Attach the browser's ``tiles:read`` cookie for exactly these campaigns.
 
@@ -67,10 +72,10 @@ def set_tiler_cookie(
             sub,
             campaigns,
             scope=["tiles:read"],
-            ttl=TILER_TOKEN_TTL,
+            ttl=ttl,
             visualizer_id=visualizer_id,
         ),
-        max_age=TILER_TOKEN_TTL,
+        max_age=ttl,
         httponly=True,
         secure=settings.TILER_COOKIE_SECURE,
         samesite=settings.TILER_COOKIE_SAMESITE,

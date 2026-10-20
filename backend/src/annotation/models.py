@@ -244,6 +244,7 @@ class Annotation(Base):
         Index("idx_annotations_campaign_id", "campaign_id"),
         Index("idx_annotations_task_id", "annotation_task_id"),
         Index("idx_annotations_origin_task_id", "origin_task_id"),
+        Index("idx_annotations_reference_task_id", "reference_task_id"),
         CheckConstraint(
             "annotation_task_id IS NULL OR origin_task_id IS NULL",
             name="annotations_origin_only_standalone",
@@ -307,6 +308,10 @@ class Annotation(Base):
     # The task the annotator was on when they drew this standalone annotation;
     # never set on a task's own annotation.
     origin_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("data.annotation_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reference_task_id: Mapped[int | None] = mapped_column(
         ForeignKey("data.annotation_tasks.id", ondelete="SET NULL"),
         nullable=True,
     )

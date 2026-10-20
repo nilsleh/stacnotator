@@ -35,6 +35,7 @@ export function setTilerSessionMinter(next: TilerSessionMinter | null): void {
 }
 
 let cookieExpiry = 0;
+let refreshBuffer = 0;
 let inflight: Promise<void> | null = null;
 // The campaign id the current cookie was last minted for. The cookie is a snapshot of the
 // user's campaigns at mint time, so entering a campaign we haven't minted for since (just
@@ -50,7 +51,7 @@ const REFRESH_BUFFER_S = 60;
  *  mint (via inflight + mintedForCampaign). */
 export async function ensureTilerSession(campaignId?: string): Promise<void> {
   const now = Date.now() / 1000;
-  const stale = now >= cookieExpiry - REFRESH_BUFFER_S;
+  const stale = now >= cookieExpiry - refreshBuffer;
   const campaignChanged = campaignId != null && campaignId !== mintedForCampaign;
   if (!stale && !campaignChanged) {
     return;
@@ -59,7 +60,9 @@ export async function ensureTilerSession(campaignId?: string): Promise<void> {
 
   inflight = (async () => {
     try {
-      cookieExpiry = Date.now() / 1000 + (await minter());
+      const ttl = await minter();
+      refreshBuffer = Math.min(REFRESH_BUFFER_S, ttl / 4);
+      cookieExpiry = Date.now() / 1000 + ttl;
       if (campaignId != null) mintedForCampaign = campaignId;
     } finally {
       inflight = null;

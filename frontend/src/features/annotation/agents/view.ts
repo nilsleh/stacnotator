@@ -10,6 +10,7 @@ export interface AgentTask {
   lat: number;
   lon: number;
   geometry_wkt: string;
+  imagery_slice_id?: number | null;
   /** Building campaigns: the agent's own buildings in this scene, drawn on its views. */
   buildings?: { building_id: number; geometry_wkt: string; confidence: number | null }[] | null;
 }
@@ -31,6 +32,7 @@ export interface ViewSpec {
   columns?: number;
   cell_px?: number;
   zoom?: number;
+  fit_scene?: boolean;
 }
 
 /** The largest image the agent's model takes in without shrinking it. Views are fitted
@@ -218,6 +220,7 @@ export function defaultViews(context: CampaignContext): ViewSpec[] {
       columns: Math.min(DEFAULT_COLUMNS, covers.length),
       cell_px: CHIP_PX,
       zoom: chipZoom,
+      ...(context.building_scenes ? { fit_scene: true } : {}),
     });
   } else if (series.length) {
     views.push({ cells: series, columns: 2, cell_px: 512, zoom: chipZoom });

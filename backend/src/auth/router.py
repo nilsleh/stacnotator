@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -66,6 +67,13 @@ def get_tiler_token(
     db: Session = Depends(get_db),
 ):
     """Set a short-lived, campaign-scoped tiler HttpOnly cookie (authenticated users only)."""
+    execution_campaign = db.info.get("execution_campaign_id")
+    if isinstance(execution_campaign, int):
+        ttl = min(
+            60, max(1, int((db.info["execution_expires_at"] - datetime.now(UTC)).total_seconds()))
+        )
+        set_tiler_cookie(response, sub=str(user.id), campaigns=[execution_campaign], ttl=ttl)
+        return {"expires_in": ttl}
     set_tiler_cookie(response, sub=str(user.id), campaigns=visible_campaign_ids(db, user.id))
     return {"expires_in": TILER_TOKEN_TTL}
 

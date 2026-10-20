@@ -1,5 +1,7 @@
 """Which labels a building campaign uses, stored in ``settings.building_scenes``."""
 
+from typing import Literal
+
 from pydantic import BaseModel, model_validator
 
 # Every building is scored 1-5 when it is finished (stored in ``confidence``).
@@ -15,6 +17,8 @@ class BuildingScenes(BaseModel):
     building_label_id: int
     complete_label_id: int
     empty_label_id: int
+    geometry_policy: Literal["legacy-v1", "polygon-v1"] = "legacy-v1"
+    footprint_semantics: Literal["source-native", "roof", "ground"] = "source-native"
 
     @model_validator(mode="after")
     def _distinct(self) -> "BuildingScenes":

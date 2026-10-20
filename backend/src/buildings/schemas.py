@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -76,3 +77,10 @@ class BuildingsEvaluationOut(BaseModel):
     empty_scenes_with_false_positives: int
     empty_scene_fpr: float
     scenes: list[SceneEvaluationOut]
+    scoring_version: str = "greedy-iou-provenance-v2"
+    status: Literal["evaluated", "no_evidence"] = "no_evidence"
+    assigned_count: int = 0
+    finished_count: int = 0
+    evaluated_count: int = 0
+    coverage: dict[SceneState, int] = {}
+    empty_scene_fpr_has_evidence: bool = False

@@ -385,7 +385,9 @@ def test_building_exports_default_to_predictions_and_others_to_everything():
 
 
 def test_an_empty_building_export_keeps_its_header(monkeypatch):
-    monkeypatch.setattr(export, "fetch_annotations_with_context", lambda db, c, kind: ([], {}))
+    monkeypatch.setattr(
+        export, "fetch_annotations_with_context", lambda db, c, kind, user_id=None: ([], {})
+    )
     c = NS(id=7, settings=NS(building_scenes=CFG, labels={}, form_fields=[]))
     df = export.build_annotations_export(MagicMock(), c)
     assert df.empty

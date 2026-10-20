@@ -434,6 +434,7 @@ def export_annotations(
     db: Session = Depends(get_db),
     user: User = Depends(require_authenticated_user),
     campaign: Campaign = Depends(require_campaign_access),
+    user_id: UUID | None = None,
 ):
     """Export campaign annotations as CSV.
 
@@ -449,7 +450,7 @@ def export_annotations(
     """
     _require_export_access(db, campaign, user, kind)
     annotations_df = export.build_annotations_export(
-        db, campaign, merge_on_agreement=merge_on_agreement, kind=kind
+        db, campaign, merge_on_agreement=merge_on_agreement, kind=kind, user_id=user_id
     )
     buffer = io.StringIO()
     annotations_df.to_csv(buffer, index=False)
@@ -468,6 +469,7 @@ def export_annotations_geojson(
     db: Session = Depends(get_db),
     user: User = Depends(require_authenticated_user),
     campaign: Campaign = Depends(require_campaign_access),
+    user_id: UUID | None = None,
 ):
     """Export all annotations for a campaign as a GeoJSON FeatureCollection file.
 
@@ -475,7 +477,7 @@ def export_annotations_geojson(
     """
     _require_export_access(db, campaign, user, kind)
     geojson = export.build_annotations_geojson_export(
-        db, campaign, merge_on_agreement=merge_on_agreement, kind=kind
+        db, campaign, merge_on_agreement=merge_on_agreement, kind=kind, user_id=user_id
     )
     buffer = io.StringIO(json.dumps(geojson))
     return StreamingResponse(

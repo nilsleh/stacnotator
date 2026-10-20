@@ -332,6 +332,10 @@ def user_scenes(db: Session, campaign_id: int, user_id: UUID) -> list[Annotation
     ).all()
     if assigned:
         return list(assigned)
+    from src.agents.models import LabellingAgent
+
+    if db.get(LabellingAgent, user_id) is not None:
+        return []
     return list(
         db.scalars(
             select(AnnotationTask)

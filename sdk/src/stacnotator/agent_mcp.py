@@ -9,18 +9,23 @@ this process runs; nothing is rendered on the server.
 import asyncio
 import base64
 import contextlib
+import copy
 import functools
+import hashlib
 import json
+import os
 import subprocess
 from collections.abc import Callable
 from typing import Any, Literal
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from typing_extensions import Required, TypedDict
+from typing_extensions import NotRequired, Required, TypedDict
 
 from stacnotator import _credentials, _pixels
+from stacnotator._auth import ExecutionTokenProvider
 from stacnotator._http import Http
 from stacnotator._render_browsers import ChromiumMissingError, RenderBrowsers, install_chromium
 from stacnotator.client import Client
@@ -52,6 +57,7 @@ class ViewSpec(TypedDict, total=False):
     columns: int
     cell_px: int
     zoom: float
+    fit_scene: bool
 
 
 server = MCPServer(
@@ -72,7 +78,7 @@ _default_views: dict[str, list[ViewSpec]] = {}
 _current_tasks: dict[str, dict[str, Any]] = {}
 # The images last returned for each agent's current task, by 1-based position: what a
 # building drawn in image pixels is read against.
-_last_images: dict[str, dict[str, Any]] = {}
+_render_refs: dict[str, dict[str, Any]] = {}
 _image_limits: dict[str, dict[str, float]] = {}
 # Task assignment locks the campaign's whole open pool, so a registration running alongside
 # another would find every task taken and get none.
@@ -81,7 +87,9 @@ _registering = asyncio.Lock()
 
 # The deployment the user named in this session. A login saved earlier never picks one:
 # labelling on the wrong STACNotator writes real annotations there.
-_session_url: str | None = None
+_session_url: str | None = (
+    os.environ.get("STACNOTATOR_URL") if os.environ.get("STACNOTATOR_EXECUTION_TOKEN") else None
+)
 NO_DEPLOYMENT = (
     "No STACNotator deployment chosen in this session. Ask the user for the full URL to label "
     "on (like https://stacnotator.example.org), never assume or reuse one, then call login(url)."
@@ -96,6 +104,14 @@ def _http() -> Http:
 
 @functools.cache
 def _signed_in_http() -> Http:
+    execution_token = os.environ.get("STACNOTATOR_EXECUTION_TOKEN")
+    if execution_token:
+        if not _session_url:
+            raise ToolError("Execution mode requires STACNOTATOR_URL")
+        return Http(
+            os.environ.get("STACNOTATOR_API_URL", _session_url),
+            ExecutionTokenProvider(execution_token),
+        )
     try:
         return Client()._http
     except NotLoggedInError as exc:
@@ -158,10 +174,11 @@ async def _on_page(agent_id: str, method: str, *args: Any) -> Any:
         raise ToolError(f"The render browser failed: {exc}") from exc
 
 
-async def _views_of(agent_id: str) -> list[ViewSpec]:
-    if agent_id not in _default_views:
-        _default_views[agent_id] = await _on_page(agent_id, "defaultViews")
-    return _default_views[agent_id]
+async def _views_of(agent_id: str, task: dict[str, Any] | None = None) -> list[ViewSpec]:
+    if agent_id in _default_views:
+        return _default_views[agent_id]
+    views: list[ViewSpec] = await _on_page(agent_id, "defaultViews", task)
+    return views
 
 
 def _limits_of(agent_id: str) -> dict[str, float]:
@@ -201,18 +218,36 @@ async def _bundle(
     for view in rendered:
         entry: dict[str, Any] = {"view": view["view"]}
         if "image_base64" in view:
-            images.append(Image(data=base64.b64decode(view["image_base64"]), format="jpeg"))
+            data = base64.b64decode(view["image_base64"])
+            images.append(Image(data=data, format="jpeg"))
             entry["image"] = len(images)
-            entry["meta"] = view["meta"]
+            entry["meta"] = copy.deepcopy(view["meta"])
+            entry["image_sha256"] = hashlib.sha256(data).hexdigest()
+            task_id = summary["task"]["task_id"]
+            reference = {"render_id": str(uuid4())}
+            if summary["task"].get("buildings") is not None:
+                reference = await _api(
+                    _http().post,
+                    f"/agents/{agent_id}/tasks/{task_id}/renders",
+                    {
+                        "image_sha256": entry["image_sha256"],
+                        "metadata": {**entry["meta"], "view": view["view"]},
+                    },
+                )
+            entry.update(reference)
+            _render_refs[reference["render_id"]] = {
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "image": entry["image"],
+                "meta": copy.deepcopy(entry["meta"]),
+            }
+            while len(_render_refs) > 256:
+                _render_refs.pop(next(iter(_render_refs)))
         else:
             entry["error"] = view["error"]
         views.append(entry)
 
     drawn = [view["image_base64"] for view in rendered if "image_base64" in view]
-    _last_images[agent_id] = {
-        "task_id": summary["task"]["task_id"],
-        "metas": [view["meta"] for view in rendered if "image_base64" in view],
-    }
     agent = await _agent(agent_id)
     # Watching is a side show: a closed window never fails the agent's call.
     with contextlib.suppress(Exception):
@@ -227,6 +262,8 @@ async def login(url: str) -> str:
     ask the user which deployment to use; never assume one or reuse one from an earlier
     session. Opens a browser tab to sign in when needed."""
     global _session_url
+    if os.environ.get("STACNOTATOR_EXECUTION_TOKEN"):
+        raise ToolError("Execution mode cannot sign in as an owner or change deployment.")
     url = _full_url(url)
     _signed_in_http.cache_clear()
     try:
@@ -234,7 +271,7 @@ async def login(url: str) -> str:
     except StacnotatorError as exc:
         raise ToolError(str(exc)) from exc
     if url != _session_url:
-        for state in (_agents, _default_views, _current_tasks, _image_limits):
+        for state in (_agents, _default_views, _current_tasks, _image_limits, _render_refs):
             state.clear()
     _session_url = url
     _signed_in_http.cache_clear()
@@ -268,6 +305,7 @@ async def register_agent(
     default_views: list[ViewSpec] | None = None,
     watch_window: bool = True,
     split: str | None = None,
+    operation_id: str | None = None,
 ) -> str:
     """Create a labelling agent on a campaign and assign it task_count tasks.
 
@@ -284,6 +322,8 @@ async def register_agent(
     On by default; pass false only when the user does not want it.
     split: building campaigns only - take scenes of this split ("val", "test"). An agent
     gets its own copy of each scene, alongside anyone else labelling it.
+    operation_id: caller-generated UUID. Persist it before calling and reuse the same
+    request after a timeout/restart to recover the original agent and assignments.
 
     Returns the agent (keep agent_id), the campaign context (guide, labels, form fields,
     imagery slices, basemaps, time series), the default views and agents_page, the URL to
@@ -303,6 +343,7 @@ async def register_agent(
                     "task_set_id": task_set_id,
                     "takes_over_work": takes_over_work,
                     "split": split,
+                    "operation_id": operation_id,
                 }
             ),
         )
@@ -362,19 +403,29 @@ async def next_task(agent_id: str) -> list[str | Image]:
 
     Returns JSON {task, remaining, views}, then the images. Each view entry has its spec and
     either image (1-based position among the returned images) with meta (per-cell captions,
-    zoom, meters_per_pixel, time series values) or an error. task null means every assigned
-    task is done. The same task is returned until it is labelled or skipped.
+    zoom, meters_per_pixel, time series values) or an error. task null means the queue is
+    empty, not completion: skipped scenes still block hand-in. Use agent_progress.
+    The same task is returned until it is labelled or skipped.
     """
     result = await _api(_http().post, f"/agents/{agent_id}/next", {})
     if not result["tasks"]:
         _current_tasks.pop(agent_id, None)
-        return [_json({"task": None, "remaining": 0, "note": "All assigned tasks are done."})]
+        return [
+            _json(
+                {
+                    "task": None,
+                    "remaining": 0,
+                    "note": "No queued tasks. Use agent_progress; skipped scenes are unfinished.",
+                }
+            )
+        ]
     task, *upcoming = result["tasks"]
     _current_tasks[agent_id] = task
-    views = await _views_of(agent_id)
+    views = await _views_of(agent_id, task)
     limits = _limits_of(agent_id)
     rendered = await _on_page(agent_id, "render", task, views, limits)
-    await _on_page(agent_id, "preload", upcoming, views, limits)
+    compatible = [t for t in upcoming if t.get("imagery_slice_id") == task.get("imagery_slice_id")]
+    await _on_page(agent_id, "preload", compatible, views, limits)
     return await _bundle(agent_id, {"task": task, "remaining": result["remaining"]}, rendered)
 
 
@@ -390,6 +441,23 @@ async def get_views(agent_id: str, task_id: int, views: list[ViewSpec]) -> list[
         raise ToolError("Pass 1-8 views.")
     rendered = await _on_page(agent_id, "render", task, views, _limits_of(agent_id))
     return await _bundle(agent_id, {"task": task}, rendered)
+
+
+@server.tool(structured_output=False)
+async def agent_progress(agent_id: str) -> str:
+    """Authoritative building scene states and hand-in status, including skipped scenes.
+    Safe after a restart; does not release or change assignments."""
+    return _json(await _api(_http().get, f"/agents/{agent_id}/buildings/progress"))
+
+
+@server.tool(structured_output=False)
+async def open_scene(agent_id: str, task_id: int) -> str:
+    """Read and revisit an assigned building scene, including skipped/finished scenes.
+    Restores the current scene after restart. Use get_views for fresh imagery.
+    This does not unlock hand-in or change the outcome."""
+    result = await _api(_http().get, f"/agents/{agent_id}/tasks/{task_id}/scene")
+    _current_tasks[agent_id] = result["task"]
+    return _json(result)
 
 
 @server.tool(structured_output=False)
@@ -451,6 +519,7 @@ class BuildingSketch(TypedDict):
 
     pixels: list[list[float]]
     confidence: int
+    holes: NotRequired[list[list[list[float]]]]
 
 
 def _current_scene(agent_id: str, task_id: int) -> dict[str, Any]:
@@ -473,67 +542,150 @@ def _with_buildings(task: dict[str, Any], buildings: list[dict[str, Any]]) -> st
     )
 
 
+def _render_meta(agent_id: str, task_id: int, image: int, render_id: str | None) -> dict[str, Any]:
+    shown = _render_refs.get(render_id or "")
+    if (
+        shown is None
+        or shown["agent_id"] != agent_id
+        or shown["task_id"] != task_id
+        or shown["image"] != image
+    ):
+        raise ToolError("Unknown or mismatched render_id. Request a fresh render after restart.")
+    meta: dict[str, Any] = shown["meta"]
+    return meta
+
+
 @server.tool(structured_output=False)
 async def draw_buildings(
-    agent_id: str, task_id: int, image: int, buildings: list[BuildingSketch]
+    agent_id: str,
+    task_id: int,
+    image: int,
+    buildings: list[BuildingSketch],
+    operation_id: str | None = None,
+    render_id: str | None = None,
 ) -> str:
     """Building campaigns: add buildings to the current scene, traced on one of the images
-    last returned for it (image: its 1-based position). Trace each roof outline corner by
-    corner in that image's pixels, inside the red scene outline. All buildings of one call
-    are saved together or not at all. Returns your buildings in the scene with their ids."""
+    returned for it (render_id required; image: its 1-based position). Trace each building
+    using the campaign's footprint semantics, in image pixels inside the red scene outline.
+    All buildings of one call are saved together or not at all.
+    Returns your buildings in the scene with their ids."""
     task = _current_scene(agent_id, task_id)
-    shown = _last_images.get(agent_id)
-    if shown is None or shown["task_id"] != task_id or not 1 <= image <= len(shown["metas"]):
-        raise ToolError("image must be one of the images last returned for this task.")
-    meta = shown["metas"][image - 1]
+    meta = _render_meta(agent_id, task_id, image, render_id)
     try:
         body = [
-            {"geometry_wkt": _pixels.polygon_wkt(meta, b["pixels"]), "confidence": b["confidence"]}
+            {
+                "geometry_wkt": _pixels.polygon_wkt(meta, b["pixels"], b.get("holes")),
+                "confidence": b["confidence"],
+            }
             for b in buildings
         ]
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
     result = await _api(
-        _http().post, f"/agents/{agent_id}/tasks/{task_id}/buildings", {"buildings": body}
+        _http().post,
+        f"/agents/{agent_id}/tasks/{task_id}/buildings",
+        _without_none({"buildings": body, "operation_id": operation_id, "render_id": render_id}),
     )
     return _with_buildings(task, result)
 
 
 @server.tool(structured_output=False)
-async def delete_buildings(agent_id: str, task_id: int, building_ids: list[int]) -> str:
+async def edit_building(
+    agent_id: str,
+    task_id: int,
+    building_id: int,
+    image: int,
+    render_id: str,
+    pixels: list[list[float]],
+    confidence: int,
+    operation_id: str | None = None,
+    holes: list[list[list[float]]] | None = None,
+) -> str:
+    """Replace an owned polygon in place, retaining its building ID.
+    Pixels refer to render_id, not the latest image. Reopens a finished scene;
+    handed-in work stays locked. Persist operation_id for an ambiguous-write retry."""
+    task = _current_scene(agent_id, task_id)
+    meta = _render_meta(agent_id, task_id, image, render_id)
+    try:
+        geometry = _pixels.polygon_wkt(meta, pixels, holes)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    result = await _api(
+        _http().patch,
+        f"/agents/{agent_id}/tasks/{task_id}/buildings/{building_id}",
+        _without_none(
+            {
+                "geometry_wkt": geometry,
+                "confidence": confidence,
+                "render_id": render_id,
+                "operation_id": operation_id,
+            }
+        ),
+    )
+    return _with_buildings(task, result)
+
+
+@server.tool(structured_output=False)
+async def delete_buildings(
+    agent_id: str, task_id: int, building_ids: list[int], operation_id: str | None = None
+) -> str:
     """Building campaigns: delete some of your buildings in the current scene, to redraw
     them or to mark the scene empty. Returns the buildings left."""
     task = _current_scene(agent_id, task_id)
     result = await _api(
         _http().post,
         f"/agents/{agent_id}/tasks/{task_id}/buildings/delete",
-        {"building_ids": building_ids},
+        _without_none({"building_ids": building_ids, "operation_id": operation_id}),
     )
     return _with_buildings(task, result)
 
 
 @server.tool(structured_output=False)
 async def finish_scene(
-    agent_id: str, task_id: int, outcome: Literal["complete", "empty"], comment: str
+    agent_id: str,
+    task_id: int,
+    outcome: Literal["complete", "empty"],
+    comment: str,
+    operation_id: str | None = None,
+    render_id: str | None = None,
+    image: int = 1,
 ) -> str:
     """Building campaigns: finish the current scene. complete: every building in it is
     drawn (at least one). empty: it holds no building (delete any you drew first). comment:
     what you saw and what stayed uncertain. Then call next_task."""
     _current_scene(agent_id, task_id)
+    meta = _render_meta(agent_id, task_id, image, render_id)
+    if meta.get("status") != "ready" or not any(
+        c.get("kind") == "imagery" and c.get("status") == "ready" for c in meta.get("cells", [])
+    ):
+        raise ToolError("Scene outcome requires successfully rendered imagery, not missing tiles.")
     result = await _api(
         _http().post,
         f"/agents/{agent_id}/tasks/{task_id}/outcome",
-        {"outcome": outcome, "comment": comment},
+        _without_none(
+            {
+                "outcome": outcome,
+                "comment": comment,
+                "operation_id": operation_id,
+                "render_id": render_id,
+            }
+        ),
     )
     _current_tasks.pop(agent_id, None)
     return _json(result)
 
 
 @server.tool(structured_output=False)
-async def hand_in(agent_id: str) -> str:
+async def hand_in(agent_id: str, operation_id: str | None = None) -> str:
     """Building campaigns: hand in once every assigned scene is complete or empty (skipped
     ones block it). Returns the agent's scene counts."""
-    return _json(await _api(_http().post, f"/agents/{agent_id}/buildings/hand-in", {}))
+    return _json(
+        await _api(
+            _http().post,
+            f"/agents/{agent_id}/buildings/hand-in",
+            _without_none({"operation_id": operation_id}),
+        )
+    )
 
 
 @server.tool(structured_output=False)

@@ -28,6 +28,7 @@ from src.annotation.models import (
 )
 from src.auth.constants import AGENT_ISSUER
 from src.auth.models import User
+from src.buildings.models import BuildingSceneSource
 from src.campaigns.models import Campaign, TaskSet
 from src.canvas.models import CanvasLayout
 from src.custom_layers.models import CustomMap
@@ -440,6 +441,14 @@ def duplicate_campaign(
                         campaign_id=dup.id,
                         geometry_id=geometry_map[task.geometry_id],
                         task_set_id=set_map[task.task_set_id],
+                        raw_source_data=(
+                            {
+                                **task.raw_source_data,
+                                "slice_id": slice_map.get(task.raw_source_data["slice_id"]),
+                            }
+                            if task.raw_source_data and "slice_id" in task.raw_source_data
+                            else task.raw_source_data
+                        ),
                         claimed_by_user_id=None,
                         claimed_at=None,
                     )
@@ -449,6 +458,10 @@ def duplicate_campaign(
         )
 
         task_ids = list(task_map)
+        for source in db.scalars(
+            select(BuildingSceneSource).where(BuildingSceneSource.task_id.in_(task_ids))
+        ):
+            db.add(clone_row(source, task_id=task_map[source.task_id]))
         if plan.assignments:
             # What a labelling agent holds never travels: an agent is registered for one
             # campaign, so in the copy the task would sit with an account that cannot work
@@ -492,6 +505,11 @@ def duplicate_campaign(
                 origin_task_id=(
                     task_map.get(annotation.origin_task_id)
                     if annotation.origin_task_id is not None
+                    else None
+                ),
+                reference_task_id=(
+                    task_map.get(annotation.reference_task_id)
+                    if annotation.reference_task_id is not None
                     else None
                 ),
                 imagery_slice_id=(

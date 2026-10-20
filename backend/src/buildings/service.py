@@ -7,8 +7,8 @@ from collections import defaultdict
 from typing import get_args
 from uuid import UUID
 
+from fastapi import HTTPException
 from geoalchemy2.shape import to_shape
-from shapely import STRtree
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -61,14 +61,11 @@ def evaluate(
     threshold: float = evaluation.DEFAULT_IOU_THRESHOLD,
 ) -> BuildingsEvaluationOut:
     """Score one annotator's Complete and Empty scenes (optionally one split) against the
-    campaign's references. A reference belongs to the scene its interior lies in: the
-    seeder clips each one to its chip."""
+    campaign's references, linked to their source scene at import.
+    Missing or ambiguous legacy provenance must be resolved before scoring."""
     cfg = lifecycle.require_building_campaign(campaign)
-    finished = {
-        s.task_id: s.state
-        for s in lifecycle.scene_summaries(db, campaign, cfg, user_id)
-        if s.state in lifecycle.FINISHED
-    }
+    summaries = lifecycle.scene_summaries(db, campaign, cfg, user_id)
+    finished = {s.task_id: s.state for s in summaries if s.state in lifecycle.FINISHED}
     tasks = [
         t
         for t in db.scalars(
@@ -96,15 +93,30 @@ def evaluate(
 
     references: dict[int, list[evaluation.Shape]] = defaultdict(list)
     if tasks:
-        cells = STRtree([to_shape(t.geometry.geometry) for t in tasks])
-        for annotation_id, geom in db.execute(
-            select(Annotation.id, AnnotationGeometry.geometry)
+        unresolved = db.scalars(
+            select(Annotation.id)
+            .where(
+                Annotation.campaign_id == campaign.id,
+                Annotation.source_id.is_not(None),
+                Annotation.reference_task_id.is_(None),
+            )
+            .limit(10)
+        ).all()
+        if unresolved:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Reference scene provenance missing or ambiguous: {list(unresolved)}",
+            )
+        for annotation_id, reference_task_id, geom in db.execute(
+            select(Annotation.id, Annotation.reference_task_id, AnnotationGeometry.geometry)
             .join(AnnotationGeometry, AnnotationGeometry.id == Annotation.geometry_id)
-            .where(Annotation.campaign_id == campaign.id, Annotation.source_id.is_not(None))
+            .where(
+                Annotation.campaign_id == campaign.id,
+                Annotation.source_id.is_not(None),
+                Annotation.reference_task_id.in_(task_ids),
+            )
         ):
-            shape = to_shape(geom)
-            for i in cells.query(shape.representative_point(), predicate="within")[:1]:
-                references[tasks[int(i)].id].append((annotation_id, shape))
+            references[reference_task_id].append((annotation_id, to_shape(geom)))
 
     scenes = [
         evaluation.SceneInput(
@@ -118,8 +130,28 @@ def evaluate(
         for t in tasks
     ]
     result = evaluation.evaluate_scenes(scenes, threshold)
+    if split is not None:
+        split_ids = set(
+            db.scalars(
+                select(AnnotationTask.id).where(
+                    AnnotationTask.id.in_([s.task_id for s in summaries]),
+                    AnnotationTask.raw_source_data["split"].astext == split,
+                )
+            )
+        )
+        summaries = [s for s in summaries if s.task_id in split_ids]
+    coverage = dict.fromkeys(get_args(lifecycle.SceneState), 0)
+    for summary in summaries:
+        coverage[summary.state] += 1
     return result.model_copy(
-        update={"campaign_id": campaign.id, "user_id": user_id, "split": split}
+        update={
+            "campaign_id": campaign.id,
+            "user_id": user_id,
+            "split": split,
+            "coverage": coverage,
+            "assigned_count": len(summaries),
+            "finished_count": sum(s.state in lifecycle.FINISHED for s in summaries),
+        }
     )
 
 

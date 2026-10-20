@@ -19,7 +19,7 @@ type RenderedView = { view: ViewSpec } & (RenderedImage | { error: string });
 
 interface AgentPageApi {
   context(): CampaignContext;
-  defaultViews(): ViewSpec[];
+  defaultViews(task?: AgentTask): ViewSpec[];
   render(task: AgentTask, views: ViewSpec[], limits: ImageLimits): Promise<RenderedView[]>;
   /** Draws in the background, one view at a time, so a later render is instant. */
   preload(tasks: AgentTask[], views: ViewSpec[], limits: ImageLimits): void;
@@ -59,7 +59,7 @@ function createApi(campaign: CampaignOutFull, stage: HTMLElement): AgentPageApi 
 
   const draw = (task: AgentTask, view: ViewSpec, limits: ImageLimits): Promise<RenderedView> => {
     // The agent's own buildings are drawn on the view, so drawing one makes a new view.
-    const buildings = (task.buildings ?? []).map((b) => b.building_id).join(',');
+    const buildings = JSON.stringify(task.buildings ?? []);
     const key = `${task.task_id}|${buildings}|${JSON.stringify(view)}|${JSON.stringify(limits)}`;
     const cached = drawn.get(key);
     if (cached) return cached;
@@ -69,7 +69,10 @@ function createApi(campaign: CampaignOutFull, stage: HTMLElement): AgentPageApi 
         return renderView({ task, view, limits, campaign, catalog, stage });
       })
       .then(
-        (image): RenderedView => ({ view, ...image }),
+        (image): RenderedView => {
+          if (image.meta.status !== 'ready') drawn.delete(key);
+          return { view, ...image };
+        },
         (err: unknown): RenderedView => {
           drawn.delete(key);
           return { view, error: extractErrorMessage(err, 'Rendering failed') };
@@ -82,7 +85,17 @@ function createApi(campaign: CampaignOutFull, stage: HTMLElement): AgentPageApi 
 
   return {
     context: () => context,
-    defaultViews: () => defaultViews(context),
+    defaultViews: (task) =>
+      task?.imagery_slice_id != null
+        ? [
+            {
+              cells: [{ slice_id: task.imagery_slice_id }],
+              columns: 1,
+              cell_px: 512,
+              fit_scene: true,
+            },
+          ]
+        : defaultViews(context),
     render: (task, views, limits) => Promise.all(views.map((view) => draw(task, view, limits))),
     preload: (tasks, views, limits) => {
       void (async () => {

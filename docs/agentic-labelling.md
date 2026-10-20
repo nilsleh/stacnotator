@@ -57,12 +57,31 @@ tasks, or use the Agents page.
 ## Evaluation runs: StacNotator tools only
 
 A building campaign seeded from a curated dataset holds that dataset's footprints as hidden
-references (see [local-labeling.md](local-labeling.md)). The app keeps them from agents: an
-agent is a project member, never an admin, and no MCP tool returns references, exports or
-scores. But the MCP server runs on your machine with your sign-in, and the datasets are
-public, so a model that can also run a shell, read files or browse the web could find the
-answers outside StacNotator. For a run you want to score, give the model the StacNotator
-MCP tools and nothing else:
+references (see [local-labeling.md](local-labeling.md)). For scored runs, separate trusted
+owner setup from execution: register the agent as the owner, then create an execution
+credential with `POST /api/agents/{agent_id}/credentials` and
+`{"expires_in":3600}`. The response contains `token`, `credential_id` and `expires_at`.
+The token is returned once; only its hash is stored. Lifetimes range from 60 seconds to
+24 hours. Revoke it with
+`DELETE /api/agents/{agent_id}/credentials/{credential_id}`.
+
+Supply `STACNOTATOR_EXECUTION_TOKEN` and `STACNOTATOR_URL` to the MCP process through its
+environment, not a prompt or a committed config. For separate API hosting also set
+`STACNOTATOR_API_URL`. Resume the pre-registered agent with `agent_progress` and
+`open_scene`; execution mode cannot register agents, sign in as the owner or switch
+deployments. Expired/revoked credentials fail instead of refreshing with a saved owner
+login. The renderer receives the same execution token.
+
+Execution credentials allow only their agent/campaign context, imagery, own assigned
+scene reads, skips and lifecycle writes. References, evaluation, exports, other agents,
+administration and task reassignment are denied at the API. API revocation is immediate;
+an already-issued campaign-only imagery cookie may remain valid for up to 60 seconds.
+**Local authentication is not a security boundary:** ordinary local requests deliberately
+authenticate as the built-in admin. Use a real authentication provider for isolation
+against arbitrary callers.
+
+The datasets remain public, so a model with shell, file or web access could find answers
+outside STACNotator. Restrict the runner to STACNotator tools as defense in depth:
 
 ```bash
 mkdir -p ~/stacnotator-eval && cd ~/stacnotator-eval   # outside the repo and data/
@@ -88,15 +107,62 @@ with `split` (`val` or `test`, matched against the scene's `raw_source_data.spli
 its own assignment for `task_count` scenes of that split. Only campaign admins can do this;
 other members hand over their own assigned scenes as usual.
 
-The agent traces buildings in image pixels. Every view's metadata carries each cell's
-rectangle in the image (`rect: [x, y, w, h]`) and zoom, and each map cell is a web mercator
-map centred on the task, so `draw_buildings` turns a pixel into lon/lat as an offset from
-the cell's centre (`sdk/src/stacnotator/_pixels.py`). The buildings are saved through the
+The agent traces buildings in returned-image pixels, not native TIFF pixels. Every view's
+metadata carries each cell's rectangle (`rect: [x, y, w, h]`), projection and affine
+`pixel_to_map: [a,b,c,d,e,f]`: image `(x,y)` maps to `(a*x+b*y+c,d*x+e*y+f)` in
+EPSG:3857. The SDK converts that to WGS84 through
+[`_pixels.py`](../sdk/src/stacnotator/_pixels.py). The buildings are saved through the
 same bulk annotation code as the annotation page, tied to the scene by `origin_task_id`,
 and drawn back in cyan in the agent's later views. `finish_scene` records the complete or
 empty outcome and `hand_in` locks the agent's work, exactly as for a person; a scene
 holding buildings cannot be marked empty, and hand-in refuses while a scene is open or
 skipped.
+
+### Render references and editing
+
+Each returned image has an immutable `render_id`, agent/task binding, `image_sha256`,
+dimensions, per-cell rectangles and rendering configuration. Archive the MCP Image
+bytes alongside their JSON metadata to preserve exactly what the agent saw; the backend
+stores metadata, not image history. Backend references expire after one hour. The SDK
+retains at most 256 references; restart or eviction requires fresh views. Unknown,
+expired, cross-agent, cross-scene or wrong-image references fail, never fall back to the
+latest image.
+
+Pass `render_id` and the image's 1-based `image` number to `draw_buildings`,
+`edit_building` and `finish_scene`. `edit_building` replaces an owned polygon while
+preserving its ID, accepts interior `holes`, validates confidence/containment and reopens
+finished work unless handed in. Deletion remains explicit. Pixel rings must stay in one
+map cell, outside caption space. Direct legacy WKT clients may omit rendering references.
+
+Building views fit the entire scene by default, with captions above the useful map area.
+Explicit zoom overrides are preserved; `fit_scene` requests scene fitting. Per-chip
+campaigns pin each task to its imagery slice and reject a different slice.
+Per-cell status is `ready`, `partial` or `failed`, with tile errors, pending tiles,
+timeout and in-scene missing-pixel coverage. Transparency outside the scene is not a
+missing-data error. Failed/partial renders are not retained in the page cache.
+Pixel tracing rejects failed imagery. MCP finishing, and restricted API outcomes, require
+a ready imagery render; generic label submission cannot bypass that requirement.
+This detects rendering failures, not the truth of client-supplied metadata or annotation.
+
+### Recovery and retries
+
+Persist a caller-generated UUID `operation_id` before registration or a building write.
+Registration, drawing, editing, deleting, finishing, task submission and hand-in accept it. Reuse
+the same ID and payload after an ambiguous response: concurrent retries wait for the
+first transaction and return its original response; a changed payload returns HTTP 409.
+IDs are scoped to the authenticated principal and endpoint target. Successful responses
+are retained until the campaign or principal is deleted. Failed transactions leave no
+receipt or partial effects, including registration's assignments. Omitting the ID keeps
+legacy behavior (no replay guarantee).
+
+The replayed response is historical, not a current scene snapshot. Read
+`GET /agents/{id}/buildings/progress` (`agent_progress`) and
+`GET /agents/{id}/tasks/{task}/scene` (`open_scene`) to reconcile current buildings,
+todo/draft/skipped/complete/empty states and hand-in. `open_scene` also restores the MCP
+current scene after restart or revisits skipped/finished work; it does not change an
+outcome or unlock handed-in work. Set image limits again and request fresh views after
+restarting. Normal resume never releases assignments. An empty `next_task` queue is not
+proof of completion: skipped scenes still block hand-in.
 
 ## How it works
 

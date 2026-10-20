@@ -15,13 +15,14 @@ the scenes hold. Needs rasterio on the host (pip install rasterio).
 
 import argparse
 import json
+import math
 import pathlib
 import random
 import sys
 
 import numpy as np
 import rasterio
-from rasterio.warp import transform_bounds
+from rasterio.warp import transform
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RAMP_DIR = ROOT / "data" / "datasets" / "ramp"
@@ -84,17 +85,72 @@ def assign_splits(stems: list[str], splits: dict[str, float], rng: random.Random
     return out
 
 
-def chip_raster(tif: pathlib.Path) -> tuple[list[float], str, list[float]]:
-    """WGS84 bbox, dtype and each RGB band's bright-end stretch value of one chip."""
+def inspect_chip(tif: pathlib.Path, rgb_bands: tuple[int, ...] = (1, 2, 3)) -> dict:
     with rasterio.open(tif) as r:
-        bbox = transform_bounds(r.crs, "EPSG:4326", *r.bounds)
-        dtype = r.dtypes[0]
-        highs = [255.0] * 3
-        if dtype != "uint8":
-            highs = [
-                float(np.percentile(r.read(b), STRETCH_PERCENTILE)) for b in (1, 2, 3)
-            ]
-    return [round(v, 8) for v in bbox], dtype, highs
+        if r.crs is None or r.transform.is_degenerate:
+            raise ValueError(f"{tif}: missing CRS or singular affine transform")
+        if not all(math.isfinite(v) for v in r.transform):
+            raise ValueError(f"{tif}: non-finite affine transform")
+        if (
+            len(rgb_bands) != 3
+            or len(set(rgb_bands)) != 3
+            or any(b < 1 or b > r.count for b in rgb_bands)
+        ):
+            raise ValueError(f"{tif}: RGB requires three distinct existing bands")
+        for band, expected in zip(rgb_bands, ("red", "green", "blue"), strict=True):
+            actual = r.colorinterp[band - 1].name
+            if actual in ("red", "green", "blue") and actual != expected:
+                raise ValueError(
+                    f"{tif}: RGB band order disagrees with color interpretation"
+                )
+        dtypes = {r.dtypes[b - 1] for b in rgb_bands}
+        if len(dtypes) != 1:
+            raise ValueError(f"{tif}: RGB bands have different dtypes")
+        dtype = next(iter(dtypes))
+        highs = []
+        for band in rgb_bands:
+            values = r.read(band, masked=True).compressed()
+            values = values[np.isfinite(values)]
+            if values.size == 0 or values.max() <= values.min():
+                raise ValueError(f"{tif}: RGB band {band} has no usable dynamic range")
+            high = (
+                255.0
+                if dtype == "uint8"
+                else float(np.percentile(values, STRETCH_PERCENTILE))
+            )
+            if not math.isfinite(high) or high <= 0:
+                raise ValueError(f"{tif}: invalid RGB stretch")
+            highs.append(high)
+        corners = [(0, 0), (r.width, 0), (r.width, r.height), (0, r.height), (0, 0)]
+        edge = [
+            r.transform * (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+            for a, b in zip(corners[:-1], corners[1:], strict=True)
+            for t in np.linspace(0, 1, 17)[:-1]
+        ]
+        xs, ys = transform(r.crs, "EPSG:4326", *zip(*edge, strict=True))
+        ring = [[x, y] for x, y in zip(xs, ys, strict=True)]
+        ring.append(ring[0])
+        return {
+            "bbox": [min(xs), min(ys), max(xs), max(ys)],
+            "footprint": {"type": "Polygon", "coordinates": [ring]},
+            "dtype": dtype,
+            "highs": highs,
+            "rgb_bands": list(rgb_bands),
+            "crs": r.crs.to_string(),
+            "transform": list(r.transform)[:6],
+            "width": r.width,
+            "height": r.height,
+            "nodata": [
+                v if v is None or math.isfinite(v) else str(v) for v in r.nodatavals
+            ],
+            "colorinterp": [c.name for c in r.colorinterp],
+        }
+
+
+def chip_raster(tif: pathlib.Path) -> tuple[list[float], str, list[float]]:
+    """WGS84 bbox, dtype and mask-aware RGB bright-end stretch."""
+    info = inspect_chip(tif)
+    return info["bbox"], info["dtype"], info["highs"]
 
 
 def city_title(city: str) -> str:
@@ -111,7 +167,11 @@ def build_city(city: str, config: dict, rng: random.Random) -> dict:
     splits = assign_splits([s for s, _ in picked], config["splits"], rng)
     entries, highs, dtypes = [], [], set()
     for stem, _ in picked:
-        bbox, dtype, band_highs = chip_raster(city_dir / "source" / f"{stem}.tif")
+        info = inspect_chip(
+            city_dir / "source" / f"{stem}.tif",
+            tuple(config.get("rgb_bands", (1, 2, 3))),
+        )
+        bbox, dtype, band_highs = info["bbox"], info["dtype"], info["highs"]
         dtypes.add(dtype)
         highs.append(band_highs)
         entries.append(
@@ -121,12 +181,15 @@ def build_city(city: str, config: dict, rng: random.Random) -> dict:
                 "geojson": f"ramp_{city}/labels/{stem}.geojson",
                 "bbox": bbox,
                 "split": splits[stem],
+                "footprint": info["footprint"],
+                "raster_metadata": info,
             }
         )
     rescale = "rescale=0,255"
     if dtypes != {"uint8"}:
         band_highs = np.median(np.array(highs), axis=0)
-        rescale = "&".join(f"rescale=0,{int(h)}" for h in band_highs)
+        rescale = "&".join(f"rescale=0,{h:.8g}" for h in band_highs)
+    bands = "&".join(f"bidx={b}" for b in config.get("rgb_bands", (1, 2, 3)))
     west, south, east, north = (
         min(e["bbox"][0] for e in entries),
         min(e["bbox"][1] for e in entries),
@@ -138,7 +201,10 @@ def build_city(city: str, config: dict, rng: random.Random) -> dict:
         "name": f"RAMP - {city_title(city)}",
         "dataset_key": "ramp",
         "default_zoom": DEFAULT_ZOOM,
-        "tiler_params": f"bidx=1&bidx=2&bidx=3&{rescale}",
+        "tiler_params": f"{bands}&{rescale}",
+        "scene_imagery": "per_chip",
+        "geometry_policy": "polygon-v1",
+        "footprint_semantics": "roof",
         "campaign_bbox": {"west": west, "south": south, "east": east, "north": north},
         "chips": entries,
     }

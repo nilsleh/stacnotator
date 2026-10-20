@@ -135,6 +135,10 @@ The canvas layout is `develop`'s; resize panels with **Edit Layout**.
 - The default `kind=predictions` leaves references out. `kind=references` (the imported
   footprints) and `kind=all` (both) are for campaign admins only.
 - An empty building export still has its header.
+- CSV and GeoJSON retain email attribution and also include
+  `stacnotator_created_by_user_id`. Filter to an agent with `user_id=<agent UUID>`;
+  merged rows list contributing UUIDs in sorted, comma-separated order. Building IDs,
+  `stacnotator_origin_task_id` and confidence remain in the export.
 
 ## 4b. Evaluation
 
@@ -151,6 +155,47 @@ The canvas layout is `develop`'s; resize panels with **Edit Layout**.
   with matched pairs and the unmatched ids.
 - A scene without references that was marked Empty scores a perfect 1.0. Draft, Skipped
   and To do scenes are not scored.
+- Always specify `user_id=<agent UUID>` when scoring an agent. Results include
+  `assigned_count`, `finished_count`, `evaluated_count`, and `coverage` counts for every
+  scene state (restricted to `split` when supplied). `status=no_evidence` means no scenes
+  were evaluated, not successful completion. `empty_scene_fpr_has_evidence=false` means
+  there was no empty-reference denominator; the legacy numeric FPR is still present.
+- Scoring version `greedy-iou-provenance-v2` retains the matching algorithm and threshold,
+  but uses explicit reference-to-scene links instead of a spatial interior-point lookup.
+  Imports through the building seeder set `reference_task_id`; campaign duplication
+  remaps it, the pinned slice and trusted scene-source metadata to the copy.
+- Migration `bf1sceneprovenance` backfills a legacy reference only when exactly one scene
+  in the entire campaign covers it. Overlapping or unmatched references remain unresolved.
+  Evaluation then returns HTTP 409 with example reference IDs rather than choosing an
+  arbitrary scene. A trusted administrator must resolve these links from original import
+  provenance, checking campaign/scene identity. Generic CSV/GeoJSON reference imports
+  without scene provenance also require this reconciliation. Do not reset or reseed
+  annotated campaigns to resolve it.
+
+### Imagery and geometry preflight
+
+New RAMP manifests use mask-aware stretch and validate RGB band order, dynamic range,
+CRS and affine transforms. They preserve dimensions, nodata, color interpretation and
+the densified transformed chip footprint. `scene_imagery=per_chip` prevents a neighboring
+acquisition from being substituted by a mosaic. Source chip identity and raster metadata
+live in the trusted scene-source table, not ordinary agent task output.
+
+`settings.building_scenes.geometry_policy` defaults to `legacy-v1`; new RAMP manifests
+opt into `polygon-v1`, which explicitly rejects multipart reference buildings.
+Polygon holes are supported. References are clipped at the scene boundary; predictions
+must stay inside it with the existing numerical tolerance, including boundary-touching
+polygons. Predictions are not silently clipped.
+
+`footprint_semantics` is `source-native` by default, or explicitly `roof` / `ground`.
+New RAMP manifests explicitly select `roof`: the authoritative
+[RAMP training-data documentation](https://rampml.global/training-data-documentation/)
+instructs labelers to outline rooftops and distinguishes RAMP's rooftop target from
+SpaceNet's ground footprints, whose off-nadir displacement must be corrected for RAMP.
+This does not relabel existing campaigns or establish the semantics of other datasets.
+Source-native remains unresolved, not proof of either interpretation. Verify partial edge
+buildings, RGB, embedded nodata and alignment on a real chip before expanded evaluation.
+The seeder also accepts an explicit finite `nodata` override through its existing tiler
+parameter path when required by a verified source.
 
 ## 5. Backup and restore
 
@@ -191,3 +236,10 @@ scenes.
   campaigns, or ones configured like them, have scene mode.
 - **A building is refused**: buildings must be single 2D polygons inside the scene outline,
   with a 1-5 score. The API's error message names the rule.
+## Agent recovery
+
+Agent clients should persist `operation_id` UUIDs before registration and building
+mutations, and retry ambiguous responses with the identical request. Registration and
+assignment now commit atomically. Use the agent progress and individual scene reads to
+resume without releasing assignments; a skipped scene is unfinished even with an empty
+queue. See [agent recovery and retries](agentic-labelling.md#recovery-and-retries).

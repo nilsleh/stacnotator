@@ -33,6 +33,23 @@ class NoneTokenProvider:
         pass
 
 
+class ExecutionTokenProvider:
+    """An execution capability never refreshes into an owner's saved credentials."""
+
+    def __init__(self, token: str):
+        if not token.startswith("stac-agent-"):
+            raise AuthenticationError("Expected an agent execution credential")
+        self._token = token
+
+    def id_token(self) -> str:
+        return self._token
+
+    def invalidate(self) -> None:
+        raise AuthenticationError(
+            "Execution credential expired or revoked; ask its owner to renew it"
+        )
+
+
 class FirebaseTokenProvider:
     """Mints short-lived Firebase ID tokens from a long-lived refresh token."""
 

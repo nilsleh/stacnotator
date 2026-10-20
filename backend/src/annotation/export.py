@@ -145,6 +145,7 @@ _STACNOTATOR_COLUMN_ORDER: tuple[str, ...] = (
     "stacnotator_flagged_for_review",
     "stacnotator_flag_comment",
     "stacnotator_created_by_user_email",
+    "stacnotator_created_by_user_id",
     "stacnotator_created_at",
     "stacnotator_active_seconds",
     "stacnotator_imagery_source_name",
@@ -306,6 +307,7 @@ def _build_export_record_for_annotation(
     record["stacnotator_flagged_for_review"] = annotation.flagged_for_review
     record["stacnotator_flag_comment"] = annotation.flag_comment
     record["stacnotator_created_by_user_email"] = user_email_map.get(annotation.created_by_user_id)
+    record["stacnotator_created_by_user_id"] = str(annotation.created_by_user_id)
     record["stacnotator_created_at"] = annotation.created_at
     record["stacnotator_active_seconds"] = annotation.active_seconds
     record["stacnotator_annotator_count"] = task_annotator_count
@@ -389,6 +391,9 @@ def _build_export_record_merged(
     ]
     record["stacnotator_flag_comment"] = " | ".join(flag_comments) if flag_comments else None
     record["stacnotator_created_by_user_email"] = ", ".join(emails) if emails else None
+    record["stacnotator_created_by_user_id"] = ", ".join(
+        sorted({str(a.created_by_user_id) for a in labeled})
+    )
     record["stacnotator_created_at"] = latest_created_at
     # Summed, not averaged: the merged row stands for the task, so the useful
     # figure is the total effort the task cost across its annotators.
@@ -542,11 +547,13 @@ def resolve_export_kind(campaign: Campaign, kind: ExportKind | None) -> ExportKi
 
 
 def fetch_annotations_with_context(
-    db: Session, campaign: Campaign, kind: ExportKind = "all"
+    db: Session, campaign: Campaign, kind: ExportKind = "all", user_id: UUID | None = None
 ) -> tuple[list[Annotation], dict[UUID, str]]:
     """Fetch the campaign's annotations of ``kind`` with user emails resolved and
     ``counts_toward_completion`` attached (the one DB touch of the export)."""
     query = select(Annotation).where(Annotation.campaign_id == campaign.id)
+    if user_id is not None:
+        query = query.where(Annotation.created_by_user_id == user_id)
     if kind == "predictions":
         query = query.where(Annotation.source_id.is_(None))
     elif kind == "references":
@@ -577,6 +584,7 @@ def build_annotations_export(
     campaign: Campaign,
     merge_on_agreement: bool = False,
     kind: ExportKind | None = None,
+    user_id: UUID | None = None,
 ) -> pd.DataFrame:
     """Build CSV export of all annotations and tasks for a campaign.
 
@@ -590,7 +598,7 @@ def build_annotations_export(
     ours.
     """
     annotations, user_email_map = fetch_annotations_with_context(
-        db, campaign, resolve_export_kind(campaign, kind)
+        db, campaign, resolve_export_kind(campaign, kind), user_id
     )
     records, _canonical, columns = build_export_records(
         annotations=annotations,
@@ -615,6 +623,7 @@ def build_annotations_geojson_export(
     campaign: Campaign,
     merge_on_agreement: bool = False,
     kind: ExportKind | None = None,
+    user_id: UUID | None = None,
 ) -> dict:
     """Build a GeoJSON FeatureCollection of all annotations for a campaign.
 
@@ -623,7 +632,7 @@ def build_annotations_geojson_export(
     use the canonical annotation's geometry for merged rows.
     """
     annotations, user_email_map = fetch_annotations_with_context(
-        db, campaign, resolve_export_kind(campaign, kind)
+        db, campaign, resolve_export_kind(campaign, kind), user_id
     )
     records, canonical_annotations, columns = build_export_records(
         annotations=annotations,
